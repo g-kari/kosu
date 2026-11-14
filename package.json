@@ -1,1 +1,25 @@
-{"dependencies":{"hono":"^4.6.14"},"description":"Kosu — 工数・タスク管理サービス（Workers + D1 + R2、MCP対応、OIDCログイン）","devDependencies":{"@cloudflare/workers-types":"^5.20261110.0","typescript":"^5.7.2","vitest":"^4.1.0","wrangler":"^4.0.0"},"name":"kosu","private":true,"scripts":{"build":"wrangler deploy --dry-run --outdir dist/worker","db:migrate":"wrangler d1 migrations apply kosu --remote","db:migrate:local":"wrangler d1 migrations apply kosu --local","deploy":"wrangler deploy","dev":"wrangler dev","test":"vitest run","typecheck":"tsc --noEmit"},"type":"module","version":"0.3.0"}
+{
+  "dependencies": {
+    "hono": "^4.6.14"
+  },
+  "description": "Kosu — 工数・タスク管理サービス（Workers + D1 + R2、MCP対応、OIDCログイン）",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261110.0",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.0.0"
+  },
+  "name": "kosu",
+  "private": true,
+  "scripts": {
+    "build": "wrangler deploy --dry-run --outdir dist/worker",
+    "db:migrate": "wrangler d1 migrations apply kosu --remote",
+    "db:migrate:local": "wrangler d1 migrations apply kosu --local",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module",
+  "version": "0.4.0"
+}

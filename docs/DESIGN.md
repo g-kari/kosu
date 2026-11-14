@@ -122,6 +122,24 @@
 - 締切リマインドと通知（アプリ内＋ Webhook）、通知の細分化（チャンネル別 ON/OFF、静音時間）
 - 競合時の差分プレビュー画面
 
+#### フェーズ3の実装メモ（2026-11-14、v0.4.0）
+- **検索の分担**：サーバー側検索（GET /tenants/:id/search）は平文メタデータのみ（タスクタイトル、プロジェクト名、マイルストーン名、ラベル名。読み取り権限のある範囲に限定）。タスク説明・工数メモ・コメント本文はクライアント側暗号化のためサーバーでは検索できない。暗号化本文の全文検索はクライアント側で行う（client/search.js の ClientSearchIndex が復号済み本文をメモリ上に索引化する。平文索引は永続化しない）
+- **ラベル**：スコープは tenant / workspace / project の3段で、プロジェクトで見えるのは3スコープの和集合。付与はラベルのスコープがタスクをカバーする場合のみ。色は #RRGGBB
+- **ワークフロー定義**：ステータス／優先度とも解決順は project → workspace → tenant → 既定（ステータス todo/doing/done、優先度 low/medium/high/urgent）。PUT でスコープの定義集合を置換し、`renames`（旧 slug → 新 slug）で同スコープ配下のタスクを一括移行する。DELETE でスコープ定義を消すと上位継承へ戻る。REST のタスク作成・更新は解決済み定義で検証する。同期 push は検証しない（オフライン側の未知 slug を競合処理に委ねるため）
+- **タスクの priority は列として保持**（tasks.priority、既定 medium）。アーカイブは archived_at で表し、既定の一覧からは除外する
+- **繰り返し**：完了（done カテゴリ）への遷移で次回分を生成する（タイマー実行ではない）。ルールは次回タスクへ移り generated_count を加算、end_date / max_count で停止。次回のステータスは解決済み定義の最初の open カテゴリ
+- **テンプレート**：payload はルートタスク＋ subtasks の木（日付は instantiate の base_date からの日数オフセット）。タスク複製はサブタスク木ごと深いコピーで、ラベルとカスタムフィールド値をコピーし、工数エントリはコピーしない
+- **コメント**：本文は body_enc（クライアント暗号化。サーバーは読めない）。メンションはクライアントが内部アカウント ID の配列で渡し、テナント所属をサーバーが検証する。投稿者は自動でウォッチャーになる
+- **添付**：バイト列は R2（キー `att/{tenantId}/{taskId}/{attachmentId}`）、メタデータは D1。上限 10 MiB。ダウンロードは必ず API 経由でプロジェクト読み取り権限を検証し、公開 URL は作らない
+- **変更履歴と復元**：タスクの作成・更新・削除・アーカイブ等を task_history にスナップショット付きで記録し、任意の履歴時点へ復元できる。ゴミ箱はタスク／工数エントリの論理削除一覧で、復元と完全削除（purge、テナント管理者のみ）ができる。purge は従属するフェーズ3の行も物理削除し、同期ログへ delete を追記する
+- **レポート**：期間は開始日基準（UTC、最大366日）。集計単位は project / member / task / day。丸めはエントリ単位で適用（ワークスペース解決）。コストは `丸め後秒 / 3600 × 単価（セント/時）` を整数セントへ丸め、請求額も同額とする（単価・予算とも通貨は3文字コード、既定 JPY）。メンバー別には期待値（稼働カレンダーの営業日 − 休暇日数）× 8時間を付け、プロジェクト別には予算と超過フラグを付ける。CSV は format=csv、印刷・PDF 向けは GET /tenants/:id/report/print の HTML
+- **提出・承認とロック**：提出は期間が重なる active な提出があると 409（SUBMISSION_OVERLAP）。提出中／承認済みの期間は所有者本人の変更を 403（ENTRY_FROZEN）で拒否し、管理者は編集可。月次ロック（period_locks）は開始日の UTC 月で判定し、全員（管理者含む）の直接変更を 403（PERIOD_LOCKED）で拒否する。ロック中の唯一の例外は承認済み修正申請の適用経路。修正申請は edit / create / delete の3種で create は代理入力の申請形も兼ねる。代理入力の直接形（管理者が即時記録）も用意する
+- **通知**：種別は task_assigned / task_updated / comment / mention / submission_submitted / submission_decided / change_request_created / change_request_decided / deadline_reminder / sync_conflict の10種。アプリ内通知は dedupe_key で重複防止し、行為者本人は除外。Webhook はテナント単位のエンドポイントへ受信者ごとに1回、署名は `x-kosu-signature: sha256=<HMAC-SHA256 hex>`（鍵はエンドポイントのシークレット。FIELD_ENCRYPTION_KEY で暗号化保存し、平文は作成時に1回だけ返す）。購読は events 配列で種別を列挙する（`"*"` で全種別。空配列は購読なし）。配信結果は webhook_deliveries に記録
+- **通知の細分化**：設定は (account, tenant) 単位で種別ごとに in_app / webhook の ON/OFF と静音時間（ローカル分＋TZ オフセット、跨日対応）を持つ。静音時間は Webhook のみ抑制し、アプリ内通知は記録する
+- **締切リマインド**：Worker の Cron（毎時）で実行。期限超過（dedupe は日次）・当日・前日を担当者とウォッチャーへ通知する。日付判定は UTC 基準
+- **競合の差分プレビュー**：GET /tenants/:id/sync-conflicts/:id が両ペイロードとフィールド別比較（server / client / differs）を返す。解決は server 採用（現状維持で閉じる）か client 採用（現在のサーバー状態の上にクライアントペイロードを新規変更として適用。payload が null なら削除）。画面は /app/conflicts（最小実装）。競合の発生はテナント管理者へ、解決は発生者へ通知する。競合を見られるのは発生者本人とテナント管理者
+- **同期対象の追加はなし**：フェーズ3の新エンティティ（ラベル等）は同期対象に含めていない（同期対象はフェーズ2の task / time_entry / task_dependency / milestone のまま）。priority などタスクの新フィールドはタスクのペイロードに含まれる
+
 ### フェーズ4：連携と MCP
 - MCP エンドポイント本体
 - プラグイン実体（Codex / Claude Code / dsh）

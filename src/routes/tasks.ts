@@ -61,6 +61,15 @@ import {
   stopTimer,
   type TaskInput,
 } from "../tasks";
+import { listWatcherIds } from "../comments";
+import {
+  applyTaskFilter,
+  taskIdsWithLabel,
+  type TaskFilterQuery,
+} from "../labels";
+import { dispatchNotifications } from "../notify";
+import { recordView } from "../planning";
+import { resolvePriorities, resolveStatuses } from "../workflow";
 import { isDateString } from "../timecalc";
 import type { Env, Principal, ProjectRow, Variables } from "../types";
 import { auth, queryInt, readJsonBody, type Ctx } from "./http";
@@ -114,6 +123,32 @@ async function guardProject(
   );
 }
 
+/** Reject status/priority slugs outside the project's workflow defs. */
+async function assertWorkflowSlugs(
+  c: Ctx,
+  a: Ancestry,
+  status: string | undefined,
+  priority: string | undefined,
+): Promise<void> {
+  const ctx = {
+    tenantId: a.tenantId,
+    workspaceId: a.workspaceId,
+    projectId: a.projectId,
+  };
+  if (status !== undefined) {
+    const { defs } = await resolveStatuses(c.env, ctx);
+    if (!defs.some((d) => d.slug === status)) {
+      throw badRequest(`Unknown status "${status}" for this project`);
+    }
+  }
+  if (priority !== undefined) {
+    const { defs } = await resolvePriorities(c.env, ctx);
+    if (!defs.some((d) => d.slug === priority)) {
+      throw badRequest(`Unknown priority "${priority}" for this project`);
+    }
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Tasks                                                                */
 /* ------------------------------------------------------------------ */
@@ -125,10 +160,17 @@ taskRoutes.post(TASK_PATH, async (c) => {
   const project = await loadAncestry(c, a);
   await guardProject(c, principal, a, "write");
   const parsed = parseTaskInput(body, false);
+  await assertWorkflowSlugs(
+    c,
+    a,
+    parsed.status ?? "todo",
+    parsed.priority ?? "medium",
+  );
   const input: TaskInput = {
     title: parsed.title as string,
     descriptionEnc: parsed.descriptionEnc ?? null,
     status: parsed.status ?? "todo",
+    priority: parsed.priority ?? "medium",
     assigneeAccountId: parsed.assigneeAccountId ?? null,
     parentTaskId: parsed.parentTaskId ?? null,
     startDate: parsed.startDate ?? null,
@@ -148,6 +190,18 @@ taskRoutes.post(TASK_PATH, async (c) => {
     targetId: row.id,
     detail: row.title.slice(0, 80),
   });
+  if (row.assignee_account_id) {
+    await dispatchNotifications(c.env, {
+      kind: "task_assigned",
+      tenantId: a.tenantId,
+      actorAccountId: principal.accountId,
+      recipientIds: [row.assignee_account_id],
+      title: `タスク「${row.title}」が割り当てられました`,
+      payload: { task_id: row.id, project_id: a.projectId },
+      relatedType: "task",
+      relatedId: row.id,
+    });
+  }
   return c.json({ task: publicTask(row) }, 201);
 });
 
@@ -156,7 +210,35 @@ taskRoutes.get(TASK_PATH, async (c) => {
   const principal = await auth(c, a.tenantId);
   await loadAncestry(c, a);
   await guardProject(c, principal, a, "read");
-  const tasks = await listTasks(c.env, a.projectId);
+  // Optional filter query params (the saved-filter parameter set):
+  // q, status, priority, assignee_account_id, label_id, due_from,
+  // due_to, include_archived=1. Comma separates multi-value params.
+  const split = (v: string | undefined) =>
+    v ? v.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+  const filter: TaskFilterQuery = {
+    q: c.req.query("q"),
+    status: split(c.req.query("status")),
+    priority: split(c.req.query("priority")),
+    assignee_account_id: c.req.query("assignee_account_id"),
+    label_ids: split(c.req.query("label_id")),
+    due_from: c.req.query("due_from") ?? undefined,
+    due_to: c.req.query("due_to") ?? undefined,
+    include_archived: c.req.query("include_archived") === "1",
+  };
+  const all = await listTasks(c.env, a.projectId, { includeArchived: true });
+  let labelMap: Map<string, Set<string>> | undefined;
+  if (filter.label_ids && filter.label_ids.length > 0) {
+    labelMap = new Map();
+    for (const labelId of filter.label_ids) {
+      const ids = await taskIdsWithLabel(c.env, labelId);
+      for (const id of ids) {
+        const set = labelMap.get(id) ?? new Set<string>();
+        set.add(labelId);
+        labelMap.set(id, set);
+      }
+    }
+  }
+  const tasks = applyTaskFilter(all, filter, labelMap);
   return c.json({ tasks: tasks.map(publicTask) });
 });
 
@@ -166,6 +248,7 @@ taskRoutes.get(`${TASK_PATH}/:taskId`, async (c) => {
   await loadAncestry(c, a);
   await guardProject(c, principal, a, "read");
   const row = await loadTask(c.env, a.projectId, c.req.param("taskId") as string);
+  await recordView(c.env, principal.accountId, a.tenantId, "task", row.id);
   return c.json({ task: publicTask(row) });
 });
 
@@ -180,12 +263,45 @@ taskRoutes.patch(`${TASK_PATH}/:taskId`, async (c) => {
     a.projectId,
     c.req.param("taskId") as string,
   );
-  const row = await applyTaskPatch(
-    c.env,
-    current,
-    parseTaskInput(body, true),
-    { accountId: principal.accountId },
-  );
+  // REST writes validate status/priority against the project's
+  // resolved workflow definitions (sync pushes stay free-form).
+  const parsed = parseTaskInput(body, true);
+  await assertWorkflowSlugs(c, a, parsed.status, parsed.priority);
+  const row = await applyTaskPatch(c.env, current, parsed, {
+    accountId: principal.accountId,
+  });
+  if (
+    row.assignee_account_id &&
+    row.assignee_account_id !== current.assignee_account_id
+  ) {
+    await dispatchNotifications(c.env, {
+      kind: "task_assigned",
+      tenantId: a.tenantId,
+      actorAccountId: principal.accountId,
+      recipientIds: [row.assignee_account_id],
+      title: `タスク「${row.title}」が割り当てられました`,
+      payload: { task_id: row.id, project_id: a.projectId },
+      relatedType: "task",
+      relatedId: row.id,
+    });
+  } else if (row.status !== current.status) {
+    const watchers = await listWatcherIds(c.env, row.id);
+    await dispatchNotifications(c.env, {
+      kind: "task_updated",
+      tenantId: a.tenantId,
+      actorAccountId: principal.accountId,
+      recipientIds: watchers,
+      title: `「${row.title}」のステータスが ${row.status} になりました`,
+      payload: {
+        task_id: row.id,
+        project_id: a.projectId,
+        from_status: current.status,
+        to_status: row.status,
+      },
+      relatedType: "task",
+      relatedId: row.id,
+    });
+  }
   return c.json({ task: publicTask(row) });
 });
 
@@ -258,13 +374,17 @@ taskRoutes.get(`${TASK_PATH}/:taskId/time-entries`, async (c) => {
   return c.json({ entries: entries.map((e) => publicEntry(e)) });
 });
 
-/** Entries are editable by their owner or a project admin of the task. */
+/**
+ * Entries are editable by their owner or a project admin of the task.
+ * Returns whether the actor acts as an admin (freeze bypass, see
+ * src/locks.ts).
+ */
 async function assertEntryWritable(
   c: Ctx,
   principal: Principal,
   entry: { account_id: string; tenant_id: string; task_id: string | null },
-): Promise<void> {
-  if (entry.account_id === principal.accountId) return;
+): Promise<boolean> {
+  if (entry.account_id === principal.accountId) return false;
   if (entry.task_id) {
     const taskRow = await c.env.DB.prepare(
       "SELECT * FROM tasks WHERE id = ?1",
@@ -283,7 +403,7 @@ async function assertEntryWritable(
         },
         "read",
       );
-      if (access.admin) return;
+      if (access.admin) return true;
     }
   }
   const { chain } = await guard(
@@ -292,7 +412,7 @@ async function assertEntryWritable(
     { tenantId: entry.tenant_id },
     "read",
   );
-  if (chain.tenant === "owner" || chain.tenant === "admin") return;
+  if (chain.tenant === "owner" || chain.tenant === "admin") return true;
   throw forbidden("Only the entry owner or an admin can change this entry");
 }
 
@@ -303,9 +423,10 @@ taskRoutes.patch(`${TENANT_PATH}/time-entries/:entryId`, async (c) => {
   await loadTenant(c.env, tenantId);
   const entry = await loadEntry(c.env, c.req.param("entryId") as string);
   if (entry.tenant_id !== tenantId) throw notFound("Time entry not found");
-  await assertEntryWritable(c, principal, entry);
+  const admin = await assertEntryWritable(c, principal, entry);
   const row = await applyEntryPatch(c.env, entry, parseEntryInput(body, true), {
     accountId: principal.accountId,
+    admin,
   });
   return c.json({ entry: publicEntry(row) });
 });
@@ -316,8 +437,11 @@ taskRoutes.delete(`${TENANT_PATH}/time-entries/:entryId`, async (c) => {
   await loadTenant(c.env, tenantId);
   const entry = await loadEntry(c.env, c.req.param("entryId") as string);
   if (entry.tenant_id !== tenantId) throw notFound("Time entry not found");
-  await assertEntryWritable(c, principal, entry);
-  await softDeleteEntry(c.env, entry, { accountId: principal.accountId });
+  const admin = await assertEntryWritable(c, principal, entry);
+  await softDeleteEntry(c.env, entry, {
+    accountId: principal.accountId,
+    admin,
+  });
   return c.json({ ok: true });
 });
 

@@ -15,9 +15,12 @@ import { nowIso } from "./accounts";
 import { recordAudit } from "./audit";
 import { ApiError, badRequest, conflict, notFound } from "./errors";
 import { cleanName } from "./hierarchy";
+import { recordTaskHistory } from "./history";
+import { assertEntryEditable } from "./locks";
 import { recordChange } from "./sync-core";
-import { isDateString, roundSeconds, secondsBetween, weekStart, localDayRangeUtc } from "./timecalc";
+import { addDays, isDateString, roundSeconds, secondsBetween, weekStart, localDayRangeUtc } from "./timecalc";
 import { resolveRounding } from "./settings";
+import { resolveStatuses, statusCategory } from "./workflow";
 import { randomId } from "./tokens";
 import type {
   Env,
@@ -46,6 +49,7 @@ export function publicTask(row: TaskRow) {
     title: row.title,
     description_enc: row.description_enc,
     status: row.status,
+    priority: row.priority ?? "medium",
     assignee_account_id: row.assignee_account_id,
     start_date: row.start_date,
     due_date: row.due_date,
@@ -56,6 +60,7 @@ export function publicTask(row: TaskRow) {
     created_at: row.created_at,
     updated_at: row.updated_at,
     deleted_at: row.deleted_at,
+    archived_at: row.archived_at ?? null,
   };
 }
 
@@ -183,6 +188,7 @@ export interface TaskInput {
   title: string;
   descriptionEnc: string | null;
   status: string;
+  priority: string;
   assigneeAccountId: string | null;
   parentTaskId: string | null;
   startDate: string | null;
@@ -212,6 +218,13 @@ export function parseTaskInput(
       throw badRequest('"status" must be a short slug (todo, doing, done, ...)');
     }
     out.status = status;
+  }
+  if (body["priority"] !== undefined) {
+    const priority = body["priority"];
+    if (typeof priority !== "string" || !/^[a-z][a-z0-9_-]{0,31}$/.test(priority)) {
+      throw badRequest('"priority" must be a short slug (low, medium, high, ...)');
+    }
+    out.priority = priority;
   }
   if (body["assignee_account_id"] !== undefined) {
     out.assigneeAccountId = optionalId(
@@ -359,6 +372,17 @@ async function assertParentValid(
 export interface ChangeSource {
   accountId: string;
   deviceId?: string | null;
+  /**
+   * The actor holds an admin role over the affected resource (tenant
+   * admin or project admin). Admin actors bypass the submission freeze
+   * for time entries — never the period lock (see src/locks.ts).
+   */
+  admin?: boolean;
+  /**
+   * Set only when applying an approved change request: the one path
+   * allowed to correct entries inside a locked month.
+   */
+  viaApprovedRequest?: boolean;
 }
 
 export async function insertTask(
@@ -381,6 +405,7 @@ export async function insertTask(
     title: input.title,
     description_enc: input.descriptionEnc,
     status: input.status,
+    priority: input.priority,
     assignee_account_id: input.assigneeAccountId,
     start_date: input.startDate,
     due_date: input.dueDate,
@@ -390,15 +415,16 @@ export async function insertTask(
     created_at: now,
     updated_at: now,
     deleted_at: null,
+    archived_at: null,
   };
   await env.DB.prepare(
-    "INSERT INTO tasks (id, tenant_id, workspace_id, team_id, project_id, parent_task_id, title, description_enc, status, assignee_account_id, start_date, due_date, sort_order, estimate_minutes, version, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+    "INSERT INTO tasks (id, tenant_id, workspace_id, team_id, project_id, parent_task_id, title, description_enc, status, priority, assignee_account_id, start_date, due_date, sort_order, estimate_minutes, version, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
   )
     .bind(
       row.id, row.tenant_id, row.workspace_id, row.team_id, row.project_id,
       row.parent_task_id, row.title, row.description_enc, row.status,
-      row.assignee_account_id, row.start_date, row.due_date, row.sort_order,
-      row.estimate_minutes, row.version, now, now,
+      row.priority, row.assignee_account_id, row.start_date, row.due_date,
+      row.sort_order, row.estimate_minutes, row.version, now, now,
     )
     .run();
   await recordChange(env, {
@@ -410,7 +436,50 @@ export async function insertTask(
     accountId: source.accountId,
     deviceId: source.deviceId ?? null,
   });
+  await recordTaskHistory(env, {
+    tenantId: row.tenant_id,
+    taskId: row.id,
+    accountId: source.accountId,
+    action: "create",
+    changes: {},
+    snapshot: publicTask(row),
+    version: row.version,
+  });
   return row;
+}
+
+/** Field-level diff for history; the encrypted body is only flagged. */
+function taskChanges(
+  before: TaskRow,
+  after: TaskRow,
+): Record<string, unknown> {
+  const changes: Record<string, unknown> = {};
+  const fields = [
+    "title",
+    "status",
+    "priority",
+    "assignee_account_id",
+    "parent_task_id",
+    "start_date",
+    "due_date",
+    "sort_order",
+    "estimate_minutes",
+  ] as const;
+  for (const f of fields) {
+    if (before[f] !== after[f]) {
+      changes[f] = { from: before[f], to: after[f] };
+    }
+  }
+  if (before.description_enc !== after.description_enc) {
+    changes["description_enc"] = { changed: true };
+  }
+  if ((before.archived_at ?? null) !== (after.archived_at ?? null)) {
+    changes["archived"] = {
+      from: before.archived_at !== null && before.archived_at !== undefined,
+      to: after.archived_at !== null,
+    };
+  }
+  return changes;
 }
 
 export async function applyTaskPatch(
@@ -427,6 +496,7 @@ export async function applyTaskPatch(
         ? patch.descriptionEnc
         : current.description_enc,
     status: patch.status ?? current.status,
+    priority: patch.priority ?? current.priority ?? "medium",
     assignee_account_id:
       patch.assigneeAccountId !== undefined
         ? patch.assigneeAccountId
@@ -447,18 +517,20 @@ export async function applyTaskPatch(
     version: Number(current.version) + 1,
     updated_at: nowIso(),
     deleted_at: current.deleted_at,
+    archived_at: current.archived_at ?? null,
   };
   await assertAssigneeIsMember(env, next.tenant_id, next.assignee_account_id);
   if (next.project_id) {
     await assertParentValid(env, next.project_id, next.parent_task_id, next.id);
   }
   await env.DB.prepare(
-    "UPDATE tasks SET title = ?1, description_enc = ?2, status = ?3, assignee_account_id = ?4, parent_task_id = ?5, start_date = ?6, due_date = ?7, sort_order = ?8, estimate_minutes = ?9, version = ?10, updated_at = ?11 WHERE id = ?12",
+    "UPDATE tasks SET title = ?1, description_enc = ?2, status = ?3, priority = ?4, assignee_account_id = ?5, parent_task_id = ?6, start_date = ?7, due_date = ?8, sort_order = ?9, estimate_minutes = ?10, version = ?11, updated_at = ?12 WHERE id = ?13",
   )
     .bind(
-      next.title, next.description_enc, next.status, next.assignee_account_id,
-      next.parent_task_id, next.start_date, next.due_date, next.sort_order,
-      next.estimate_minutes, next.version, next.updated_at, next.id,
+      next.title, next.description_enc, next.status, next.priority,
+      next.assignee_account_id, next.parent_task_id, next.start_date,
+      next.due_date, next.sort_order, next.estimate_minutes, next.version,
+      next.updated_at, next.id,
     )
     .run();
   await recordChange(env, {
@@ -470,7 +542,358 @@ export async function applyTaskPatch(
     accountId: source.accountId,
     deviceId: source.deviceId ?? null,
   });
+  await recordTaskHistory(env, {
+    tenantId: next.tenant_id,
+    taskId: next.id,
+    accountId: source.accountId,
+    action: "update",
+    changes: taskChanges(current, next),
+    snapshot: publicTask(next),
+    version: next.version,
+  });
+  // Recurrence: entering a done-category status spawns the next
+  // occurrence (the rule itself lives in recurrence_rules; the spawn
+  // helper is below with the other task lifecycle functions).
+  if (current.status !== next.status && !next.deleted_at) {
+    const ctx = {
+      tenantId: next.tenant_id,
+      workspaceId: next.workspace_id,
+      projectId: next.project_id,
+    };
+    const beforeCat = await statusCategory(env, ctx, current.status);
+    const afterCat = await statusCategory(env, ctx, next.status);
+    if (beforeCat !== "done" && afterCat === "done") {
+      await spawnNextOccurrence(env, next, source);
+    }
+  }
   return next;
+}
+
+/** Archive / unarchive a task (kept out of the generic patch on purpose). */
+export async function setTaskArchived(
+  env: Env,
+  current: TaskRow,
+  archived: boolean,
+  source: ChangeSource,
+): Promise<TaskRow> {
+  const next: TaskRow = {
+    ...current,
+    archived_at: archived ? nowIso() : null,
+    version: Number(current.version) + 1,
+    updated_at: nowIso(),
+  };
+  await env.DB.prepare(
+    "UPDATE tasks SET archived_at = ?1, version = ?2, updated_at = ?3 WHERE id = ?4",
+  )
+    .bind(next.archived_at, next.version, next.updated_at, next.id)
+    .run();
+  await recordChange(env, {
+    tenantId: next.tenant_id,
+    entityType: "task",
+    entityId: next.id,
+    op: "upsert",
+    payload: publicTask(next),
+    accountId: source.accountId,
+    deviceId: source.deviceId ?? null,
+  });
+  await recordTaskHistory(env, {
+    tenantId: next.tenant_id,
+    taskId: next.id,
+    accountId: source.accountId,
+    action: archived ? "archive" : "unarchive",
+    changes: taskChanges(current, next),
+    snapshot: publicTask(next),
+    version: next.version,
+  });
+  return next;
+}
+
+/** Restore a task to the state captured by one of its history rows. */
+export async function restoreTaskFromSnapshot(
+  env: Env,
+  current: TaskRow,
+  snapshot: Record<string, unknown>,
+  source: ChangeSource,
+): Promise<TaskRow> {
+  const next: TaskRow = {
+    ...current,
+    title:
+      typeof snapshot["title"] === "string"
+        ? (snapshot["title"] as string)
+        : current.title,
+    description_enc:
+      snapshot["description_enc"] !== undefined
+        ? (snapshot["description_enc"] as string | null)
+        : current.description_enc,
+    status:
+      typeof snapshot["status"] === "string"
+        ? (snapshot["status"] as string)
+        : current.status,
+    priority:
+      typeof snapshot["priority"] === "string"
+        ? (snapshot["priority"] as string)
+        : (current.priority ?? "medium"),
+    assignee_account_id:
+      snapshot["assignee_account_id"] !== undefined
+        ? (snapshot["assignee_account_id"] as string | null)
+        : current.assignee_account_id,
+    parent_task_id:
+      snapshot["parent_task_id"] !== undefined
+        ? (snapshot["parent_task_id"] as string | null)
+        : current.parent_task_id,
+    start_date:
+      snapshot["start_date"] !== undefined
+        ? (snapshot["start_date"] as string | null)
+        : current.start_date,
+    due_date:
+      snapshot["due_date"] !== undefined
+        ? (snapshot["due_date"] as string | null)
+        : current.due_date,
+    sort_order:
+      typeof snapshot["sort_order"] === "number"
+        ? (snapshot["sort_order"] as number)
+        : current.sort_order,
+    estimate_minutes:
+      snapshot["estimate_minutes"] !== undefined
+        ? (snapshot["estimate_minutes"] as number | null)
+        : current.estimate_minutes,
+    archived_at:
+      snapshot["archived_at"] !== undefined
+        ? (snapshot["archived_at"] as string | null)
+        : (current.archived_at ?? null),
+    version: Number(current.version) + 1,
+    updated_at: nowIso(),
+  };
+  await assertAssigneeIsMember(env, next.tenant_id, next.assignee_account_id);
+  if (next.project_id) {
+    await assertParentValid(env, next.project_id, next.parent_task_id, next.id);
+  }
+  await env.DB.prepare(
+    "UPDATE tasks SET title = ?1, description_enc = ?2, status = ?3, priority = ?4, assignee_account_id = ?5, parent_task_id = ?6, start_date = ?7, due_date = ?8, sort_order = ?9, estimate_minutes = ?10, archived_at = ?11, version = ?12, updated_at = ?13 WHERE id = ?14",
+  )
+    .bind(
+      next.title, next.description_enc, next.status, next.priority,
+      next.assignee_account_id, next.parent_task_id, next.start_date,
+      next.due_date, next.sort_order, next.estimate_minutes,
+      next.archived_at, next.version, next.updated_at, next.id,
+    )
+    .run();
+  await recordChange(env, {
+    tenantId: next.tenant_id,
+    entityType: "task",
+    entityId: next.id,
+    op: "upsert",
+    payload: publicTask(next),
+    accountId: source.accountId,
+    deviceId: source.deviceId ?? null,
+  });
+  await recordTaskHistory(env, {
+    tenantId: next.tenant_id,
+    taskId: next.id,
+    accountId: source.accountId,
+    action: "restore",
+    changes: taskChanges(current, next),
+    snapshot: publicTask(next),
+    version: next.version,
+  });
+  return next;
+}
+
+/** Bring a soft-deleted task back (trash restore). */
+export async function restoreDeletedTask(
+  env: Env,
+  current: TaskRow,
+  source: ChangeSource,
+): Promise<TaskRow> {
+  const next: TaskRow = {
+    ...current,
+    version: Number(current.version) + 1,
+    updated_at: nowIso(),
+    deleted_at: null,
+  };
+  await env.DB.prepare(
+    "UPDATE tasks SET version = ?1, updated_at = ?2, deleted_at = ?3 WHERE id = ?4",
+  )
+    .bind(next.version, next.updated_at, null, next.id)
+    .run();
+  await recordChange(env, {
+    tenantId: next.tenant_id,
+    entityType: "task",
+    entityId: next.id,
+    op: "upsert",
+    payload: publicTask(next),
+    accountId: source.accountId,
+    deviceId: source.deviceId ?? null,
+  });
+  await recordTaskHistory(env, {
+    tenantId: next.tenant_id,
+    taskId: next.id,
+    accountId: source.accountId,
+    action: "restore",
+    changes: { deleted: { from: true, to: false } },
+    snapshot: publicTask(next),
+    version: next.version,
+  });
+  return next;
+}
+
+/* ------------------------------------------------------------------ */
+/* Recurrence                                                           */
+/* ------------------------------------------------------------------ */
+
+interface RecurrenceRuleShape {
+  id: string;
+  freq: string;
+  interval_count: number;
+  by_weekday_json: string | null;
+  end_date: string | null;
+  max_count: number | null;
+  generated_count: number;
+  active: number;
+  created_by_account_id: string;
+}
+
+/** Next occurrence date for a rule, strictly after `base`. */
+export function nextRecurrenceDate(
+  rule: { freq: string; interval_count: number; by_weekday_json: string | null },
+  base: string,
+): string {
+  const interval = Math.max(1, Number(rule.interval_count) || 1);
+  if (rule.freq === "daily") return addDays(base, interval);
+  if (rule.freq === "monthly") {
+    const [y, m, d] = base.split("-").map(Number) as [number, number, number];
+    const target = new Date(Date.UTC(y, m - 1 + interval, 1, 12));
+    const lastDay = new Date(
+      Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0, 12),
+    ).getUTCDate();
+    const day = Math.min(d, lastDay);
+    const yy = target.getUTCFullYear();
+    const mm = String(target.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(day).padStart(2, "0");
+    return `${yy}-${mm}-${dd}`;
+  }
+  // weekly
+  let weekdays: number[] = [];
+  if (rule.by_weekday_json) {
+    try {
+      const parsed: unknown = JSON.parse(rule.by_weekday_json);
+      if (Array.isArray(parsed)) {
+        weekdays = parsed.filter(
+          (n): n is number =>
+            typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 7,
+        );
+      }
+    } catch {
+      weekdays = [];
+    }
+  }
+  if (weekdays.length > 0) {
+    // Next listed weekday strictly after the base date (interval applies
+    // only to the plain same-weekday form below).
+    for (let i = 1; i <= 7; i++) {
+      const candidate = addDays(base, i);
+      const wd = (() => {
+        const day = new Date(`${candidate}T12:00:00Z`).getUTCDay();
+        return day === 0 ? 7 : day;
+      })();
+      if (weekdays.includes(wd)) return candidate;
+    }
+  }
+  return addDays(base, 7 * interval);
+}
+
+/**
+ * When a task with an active recurrence rule is completed, create the
+ * next occurrence and move the rule onto it. Honors end_date (the last
+ * allowed occurrence date) and max_count (total spawns allowed).
+ */
+export async function spawnNextOccurrence(
+  env: Env,
+  completed: TaskRow,
+  source: ChangeSource,
+): Promise<TaskRow | null> {
+  if (!completed.project_id) return null;
+  const rule = await env.DB.prepare(
+    "SELECT * FROM recurrence_rules WHERE task_id = ?1 AND active = ?2",
+  )
+    .bind(completed.id, 1)
+    .first<RecurrenceRuleShape>();
+  if (!rule) return null;
+  const generated = Number(rule.generated_count);
+  if (rule.max_count !== null && generated >= Number(rule.max_count)) {
+    await env.DB.prepare(
+      "UPDATE recurrence_rules SET active = ?1, updated_at = ?2 WHERE id = ?3",
+    )
+      .bind(0, nowIso(), rule.id)
+      .run();
+    return null;
+  }
+  const base = completed.due_date ?? completed.start_date ?? nowIso().slice(0, 10);
+  const nextDue = nextRecurrenceDate(rule, base);
+  if (rule.end_date && nextDue > rule.end_date) {
+    await env.DB.prepare(
+      "UPDATE recurrence_rules SET active = ?1, updated_at = ?2 WHERE id = ?3",
+    )
+      .bind(0, nowIso(), rule.id)
+      .run();
+    return null;
+  }
+  // Shift the start date by the same delta as the due date when both set.
+  let nextStart = completed.start_date;
+  if (completed.start_date && completed.due_date) {
+    const deltaMs =
+      Date.parse(`${nextDue}T12:00:00Z`) - Date.parse(`${completed.due_date}T12:00:00Z`);
+    const shifted = new Date(
+      Date.parse(`${completed.start_date}T12:00:00Z`) + deltaMs,
+    );
+    nextStart = shifted.toISOString().slice(0, 10);
+  }
+  const project = await env.DB.prepare(
+    "SELECT * FROM projects WHERE id = ?1 AND deleted_at IS NULL",
+  )
+    .bind(completed.project_id)
+    .first<import("./types").ProjectRow>();
+  if (!project) return null;
+  const { defs } = await resolveStatuses(env, {
+    tenantId: completed.tenant_id,
+    workspaceId: completed.workspace_id,
+    projectId: completed.project_id,
+  });
+  const firstOpen =
+    defs.find((d) => d.category === "open")?.slug ?? defs[0]?.slug ?? "todo";
+  const spawned = await insertTask(
+    env,
+    project,
+    {
+      title: completed.title,
+      descriptionEnc: completed.description_enc,
+      status: firstOpen,
+      priority: completed.priority ?? "medium",
+      assigneeAccountId: completed.assignee_account_id,
+      parentTaskId: completed.parent_task_id,
+      startDate: nextStart,
+      dueDate: completed.due_date ? nextDue : null,
+      sortOrder: completed.sort_order,
+      estimateMinutes: completed.estimate_minutes,
+    },
+    source,
+  );
+  const now = nowIso();
+  await env.DB.prepare(
+    "UPDATE recurrence_rules SET active = ?1, updated_at = ?2 WHERE id = ?3",
+  )
+    .bind(0, now, rule.id)
+    .run();
+  await env.DB.prepare(
+    "INSERT INTO recurrence_rules (id, tenant_id, task_id, freq, interval_count, by_weekday_json, end_date, max_count, generated_count, active, created_by_account_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+  )
+    .bind(
+      randomId(), completed.tenant_id, spawned.id, rule.freq,
+      rule.interval_count, rule.by_weekday_json, rule.end_date,
+      rule.max_count, generated + 1, 1, rule.created_by_account_id, now, now,
+    )
+    .run();
+  return spawned;
 }
 
 export async function softDeleteTask(
@@ -498,23 +921,35 @@ export async function softDeleteTask(
     accountId: source.accountId,
     deviceId: source.deviceId ?? null,
   });
+  await recordTaskHistory(env, {
+    tenantId: next.tenant_id,
+    taskId: next.id,
+    accountId: source.accountId,
+    action: "delete",
+    changes: { deleted: { from: false, to: true } },
+    snapshot: publicTask(next),
+    version: next.version,
+  });
   return next;
 }
 
 export async function listTasks(
   env: Env,
   projectId: string,
+  opts: { includeArchived?: boolean } = {},
 ): Promise<TaskRow[]> {
   const res = await env.DB.prepare(
     "SELECT * FROM tasks WHERE project_id = ?1 AND deleted_at IS NULL ORDER BY sort_order ASC",
   )
     .bind(projectId)
     .all<TaskRow>();
-  return res.results.sort(
-    (a, b) =>
-      Number(a.sort_order) - Number(b.sort_order) ||
-      a.created_at.localeCompare(b.created_at),
-  );
+  return res.results
+    .filter((r) => opts.includeArchived || !r.archived_at)
+    .sort(
+      (a, b) =>
+        Number(a.sort_order) - Number(b.sort_order) ||
+        a.created_at.localeCompare(b.created_at),
+    );
 }
 
 /* ------------------------------------------------------------------ */
@@ -556,6 +991,14 @@ export async function insertEntry(
   source: ChangeSource,
   id?: string,
 ): Promise<TimeEntryRow> {
+  await assertEntryEditable(env, {
+    tenantId: input.tenantId,
+    entryAccountId: input.accountId,
+    actorAccountId: source.accountId,
+    actorIsAdmin: source.admin ?? false,
+    viaApprovedRequest: source.viaApprovedRequest ?? false,
+    startedAts: [input.startedAt],
+  });
   const times = finalizeEntryTimes(input);
   const now = nowIso();
   const duration = times.durationSeconds ?? 0;
@@ -604,6 +1047,14 @@ export async function applyEntryPatch(
   source: ChangeSource,
 ): Promise<TimeEntryRow> {
   const startedAt = patch.startedAt ?? current.started_at;
+  await assertEntryEditable(env, {
+    tenantId: current.tenant_id,
+    entryAccountId: current.account_id,
+    actorAccountId: source.accountId,
+    actorIsAdmin: source.admin ?? false,
+    viaApprovedRequest: source.viaApprovedRequest ?? false,
+    startedAts: [current.started_at, startedAt],
+  });
   const endedAt =
     patch.endedAt !== undefined ? patch.endedAt : current.ended_at;
   const durationSeconds =
@@ -653,6 +1104,14 @@ export async function softDeleteEntry(
   current: TimeEntryRow,
   source: ChangeSource,
 ): Promise<TimeEntryRow> {
+  await assertEntryEditable(env, {
+    tenantId: current.tenant_id,
+    entryAccountId: current.account_id,
+    actorAccountId: source.accountId,
+    actorIsAdmin: source.admin ?? false,
+    viaApprovedRequest: source.viaApprovedRequest ?? false,
+    startedAts: [current.started_at],
+  });
   const next: TimeEntryRow = {
     ...current,
     version: Number(current.version) + 1,
@@ -683,6 +1142,35 @@ export async function loadEntryAny(
   return env.DB.prepare("SELECT * FROM time_entries WHERE id = ?1")
     .bind(entryId)
     .first<TimeEntryRow>();
+}
+
+/** Bring a soft-deleted time entry back (trash restore). */
+export async function restoreDeletedEntry(
+  env: Env,
+  current: TimeEntryRow,
+  source: ChangeSource,
+): Promise<TimeEntryRow> {
+  const next: TimeEntryRow = {
+    ...current,
+    version: Number(current.version) + 1,
+    updated_at: nowIso(),
+    deleted_at: null,
+  };
+  await env.DB.prepare(
+    "UPDATE time_entries SET version = ?1, updated_at = ?2, deleted_at = ?3 WHERE id = ?4",
+  )
+    .bind(next.version, next.updated_at, null, next.id)
+    .run();
+  await recordChange(env, {
+    tenantId: next.tenant_id,
+    entityType: "time_entry",
+    entityId: next.id,
+    op: "upsert",
+    payload: publicEntry(next),
+    accountId: source.accountId,
+    deviceId: source.deviceId ?? null,
+  });
+  return next;
 }
 
 /** The account's currently running entry in a tenant, if any. */
@@ -1181,7 +1669,7 @@ export async function dashboard(
   }
 
   const taskRes = await env.DB.prepare(
-    "SELECT * FROM tasks WHERE tenant_id = ?1 AND assignee_account_id = ?2 AND status = ?3 AND deleted_at IS NULL",
+    "SELECT * FROM tasks WHERE tenant_id = ?1 AND assignee_account_id = ?2 AND status = ?3 AND deleted_at IS NULL AND archived_at IS NULL",
   )
     .bind(tenantId, principal.accountId, "doing")
     .all<TaskRow>();

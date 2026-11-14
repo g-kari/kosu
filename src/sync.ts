@@ -9,6 +9,8 @@
  * are pushed with base_version 0.
  */
 import { nowIso } from "./accounts";
+import { tenantAdminIds } from "./approvals";
+import { notifyConflictRecorded } from "./conflicts";
 import { badRequest, forbidden, notFound } from "./errors";
 import { guard, loadProject, loadWorkspace } from "./hierarchy";
 import {
@@ -267,6 +269,7 @@ async function applyCreate(
       title: parsed.title as string,
       descriptionEnc: parsed.descriptionEnc ?? null,
       status: parsed.status ?? "todo",
+      priority: parsed.priority ?? "medium",
       assigneeAccountId: parsed.assigneeAccountId ?? null,
       parentTaskId: parsed.parentTaskId ?? null,
       startDate: parsed.startDate ?? null,
@@ -533,11 +536,12 @@ export async function applyPush(
     if (change.base_version !== serverVersion) {
       // Server wins. Record both sides for the phase-3 resolution UI.
       const serverPayload = payloadOf(entityType, existing);
+      const conflictId = randomId();
       await env.DB.prepare(
         "INSERT INTO sync_conflicts (id, tenant_id, entity_type, entity_id, server_version, client_base_version, server_payload, client_payload, account_id, device_id, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'open', ?11)",
       )
         .bind(
-          randomId(),
+          conflictId,
           tenantId,
           entityType,
           change.entity_id,
@@ -550,6 +554,23 @@ export async function applyPush(
           nowIso(),
         )
         .run();
+      // Tell the tenant admins a conflict awaits resolution. A
+      // notification failure must never break the push itself.
+      try {
+        const admins = await tenantAdminIds(env, tenantId);
+        await notifyConflictRecorded(
+          env,
+          tenantId,
+          {
+            id: conflictId,
+            entity_type: entityType,
+            entity_id: change.entity_id,
+          },
+          admins,
+        );
+      } catch (err) {
+        console.error("conflict notification failed", err);
+      }
       results.push({
         entity_type: entityType,
         entity_id: change.entity_id,

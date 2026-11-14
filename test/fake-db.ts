@@ -231,11 +231,66 @@ export class FakeDb {
   }
 }
 
+/** In-memory R2 stand-in: just enough for the attachment flows. */
+export class FakeR2 {
+  objects = new Map<string, { bytes: Uint8Array; contentType?: string }>();
+
+  async put(
+    key: string,
+    value: ArrayBuffer | Uint8Array | ReadableStream,
+    options?: { httpMetadata?: { contentType?: string } },
+  ) {
+    let bytes: Uint8Array;
+    if (value instanceof Uint8Array) bytes = value;
+    else if (value instanceof ArrayBuffer) bytes = new Uint8Array(value);
+    else bytes = new Uint8Array(await new Response(value).arrayBuffer());
+    this.objects.set(key, {
+      bytes,
+      contentType: options?.httpMetadata?.contentType,
+    });
+    return { key, size: bytes.length };
+  }
+
+  async get(key: string) {
+    const found = this.objects.get(key);
+    if (!found) return null;
+    return {
+      key,
+      size: found.bytes.length,
+      httpMetadata: { contentType: found.contentType },
+      body: new ReadableStream({
+        start: (controller) => {
+          controller.enqueue(found.bytes);
+          controller.close();
+        },
+      }),
+      arrayBuffer: async () =>
+        found.bytes.buffer.slice(
+          found.bytes.byteOffset,
+          found.bytes.byteOffset + found.bytes.byteLength,
+        ) as ArrayBuffer,
+    };
+  }
+
+  async delete(key: string) {
+    this.objects.delete(key);
+  }
+}
+
+const r2ByDb = new WeakMap<object, FakeR2>();
+
 /** Build a Workers-style Env backed by a fresh FakeDb. */
-export function makeEnv(db: FakeDb) {
+export function makeEnv(db: FakeDb, files?: FakeR2) {
+  // One FakeR2 per FakeDb, so objects uploaded in one request stay
+  // visible to later requests in the same test.
+  let bucket = files ?? r2ByDb.get(db);
+  if (!bucket) {
+    bucket = new FakeR2();
+    r2ByDb.set(db, bucket);
+  }
   return {
     DB: db as unknown as D1Database,
-    FILES: {} as R2Bucket,
+    FILES: bucket as unknown as R2Bucket,
     APP_ORIGIN: "https://kosu.0g0.xyz",
     OIDC_ISSUER: "https://id.0g0.xyz",
     OIDC_CLIENT_ID: "test-client",

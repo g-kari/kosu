@@ -94,6 +94,7 @@ export interface TaskRow {
   title: string;
   description_enc: string | null;
   status: string;
+  priority: string;
   assignee_account_id: string | null;
   start_date: string | null;
   due_date: string | null;
@@ -103,6 +104,7 @@ export interface TaskRow {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  archived_at: string | null;
 }
 
 export interface TimeEntryRow {
@@ -156,6 +158,232 @@ export interface SyncDeviceRow {
   created_at: string;
   last_seen_at: string | null;
   revoked_at: string | null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 3 row shapes                                                   */
+/* ------------------------------------------------------------------ */
+
+export interface LabelRow {
+  id: string;
+  tenant_id: string;
+  scope_level: string;
+  workspace_id: string | null;
+  project_id: string | null;
+  name: string;
+  color: string | null;
+  created_by_account_id: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface SavedFilterRow {
+  id: string;
+  tenant_id: string;
+  account_id: string;
+  name: string;
+  project_id: string | null;
+  query_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StatusDefRow {
+  id: string;
+  tenant_id: string;
+  scope_level: string;
+  workspace_id: string | null;
+  project_id: string | null;
+  slug: string;
+  name: string;
+  category: string;
+  color: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PriorityDefRow {
+  id: string;
+  tenant_id: string;
+  scope_level: string;
+  workspace_id: string | null;
+  project_id: string | null;
+  slug: string;
+  name: string;
+  weight: number;
+  color: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CustomFieldDefRow {
+  id: string;
+  tenant_id: string;
+  project_id: string;
+  name: string;
+  field_type: string;
+  options_json: string | null;
+  sort_order: number;
+  created_by_account_id: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface TaskCommentRow {
+  id: string;
+  tenant_id: string;
+  task_id: string;
+  account_id: string;
+  body_enc: string;
+  mentions_json: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface AttachmentRow {
+  id: string;
+  tenant_id: string;
+  task_id: string;
+  account_id: string;
+  filename: string;
+  content_type: string | null;
+  size_bytes: number;
+  r2_key: string;
+  created_at: string;
+  deleted_at: string | null;
+}
+
+export interface TaskHistoryRow {
+  id: string;
+  tenant_id: string;
+  task_id: string;
+  account_id: string | null;
+  action: string;
+  changes_json: string;
+  snapshot_json: string;
+  version: number;
+  created_at: string;
+}
+
+export interface RecurrenceRuleRow {
+  id: string;
+  tenant_id: string;
+  task_id: string;
+  freq: string;
+  interval_count: number;
+  by_weekday_json: string | null;
+  end_date: string | null;
+  max_count: number | null;
+  generated_count: number;
+  active: number;
+  created_by_account_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskTemplateRow {
+  id: string;
+  tenant_id: string;
+  project_id: string;
+  name: string;
+  payload_json: string;
+  created_by_account_id: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface LeaveRecordRow {
+  id: string;
+  tenant_id: string;
+  account_id: string;
+  date: string;
+  kind: string;
+  note_enc: string | null;
+  created_by_account_id: string;
+  created_at: string;
+  deleted_at: string | null;
+}
+
+export interface TimeSubmissionRow {
+  id: string;
+  tenant_id: string;
+  account_id: string;
+  period_start: string;
+  period_end: string;
+  status: string;
+  submitted_at: string;
+  reviewed_by_account_id: string | null;
+  reviewed_at: string | null;
+  review_note_enc: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EntryChangeRequestRow {
+  id: string;
+  tenant_id: string;
+  entry_id: string | null;
+  target_account_id: string;
+  requester_account_id: string;
+  type: string;
+  payload_json: string;
+  reason_enc: string | null;
+  status: string;
+  decided_by_account_id: string | null;
+  decided_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NotificationRow {
+  id: string;
+  tenant_id: string;
+  account_id: string;
+  kind: string;
+  title: string;
+  payload_json: string;
+  related_type: string | null;
+  related_id: string | null;
+  dedupe_key: string | null;
+  read_at: string | null;
+  created_at: string;
+}
+
+export interface WebhookEndpointRow {
+  id: string;
+  tenant_id: string;
+  url: string;
+  secret_enc: string;
+  events_json: string;
+  active: number;
+  created_by_account_id: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface SyncConflictRow {
+  id: string;
+  tenant_id: string;
+  entity_type: string;
+  entity_id: string;
+  server_version: number;
+  client_base_version: number;
+  server_payload: string | null;
+  client_payload: string | null;
+  account_id: string | null;
+  device_id: string | null;
+  status: string;
+  created_at: string;
+  resolved_at: string | null;
+  resolved_by_account_id: string | null;
+  resolution: string | null;
 }
 
 export interface InviteRow {

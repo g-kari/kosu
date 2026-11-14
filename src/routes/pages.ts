@@ -120,7 +120,14 @@ async function api(path, opts) {
     const st = await api("/api/v1/tenants/" + tenantId + "/sync/status?device_id=" + encodeURIComponent(deviceId));
     $("syncSeq").textContent = "seq " + st.last_seq;
     $("syncInfo").textContent = "競合 " + st.open_conflicts + " 件 / 端末 " + st.devices.length + " 台";
-    if (st.open_conflicts > 0) $("syncInfo").className = "warn";
+    if (st.open_conflicts > 0) {
+      $("syncInfo").className = "warn";
+      const a = document.createElement("a");
+      a.href = "/app/conflicts";
+      a.textContent = "競合を確認する";
+      a.style.display = "block";
+      $("syncInfo").appendChild(a);
+    }
   } catch (err) {
     $("msg").textContent = "読み込みに失敗しました: " + err.message;
   }
@@ -204,6 +211,93 @@ const fmtDay = (t) => { const d = new Date(t); return (d.getUTCMonth()+1) + "/" 
 })();
 `;
   return c.html(shell("ガント", body, script));
+});
+
+pageRoutes.get("/app/conflicts", async (c) => {
+  if (!(await loggedIn(c))) return c.redirect("/auth/login", 302);
+  const body = `
+<h1>同期の競合</h1>
+<p class="muted"><a href="/app">← ダッシュボード</a></p>
+<p class="muted">オフライン中の変更がサーバー側とぶつかった項目です。フィールドごとに両方を見比べて、どちらを採用するか選んでください。</p>
+<div id="list"><p class="muted">読み込み中…</p></div>
+<p id="msg" class="err"></p>`;
+  const script = `
+const $ = (id) => document.getElementById(id);
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) { const t = await r.text(); throw new Error(r.status + " " + t); }
+  return r.json();
+}
+function fmtVal(v) {
+  if (v === null || v === undefined) return "（なし）";
+  if (typeof v === "string") return v.length > 120 ? v.slice(0, 120) + "…" : v;
+  return JSON.stringify(v);
+}
+async function load() {
+  const me = await api("/api/v1/me");
+  const tenantId = me.account.default_tenant_id || (me.tenants[0] && me.tenants[0].id);
+  const data = await api("/api/v1/tenants/" + tenantId + "/sync-conflicts?status=open");
+  const list = $("list");
+  list.innerHTML = "";
+  if (data.conflicts.length === 0) {
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = "未解決の競合はありません。";
+    list.appendChild(p);
+    return;
+  }
+  for (const summary of data.conflicts) {
+    const detail = await api("/api/v1/tenants/" + tenantId + "/sync-conflicts/" + summary.id);
+    const cf = detail.conflict;
+    const box = document.createElement("div");
+    box.className = "card";
+    box.style.marginBottom = "1rem";
+    const h = document.createElement("h2");
+    h.textContent = cf.entity_type + " / " + cf.entity_id + "（発生: " + new Date(cf.created_at).toLocaleString() + "）";
+    box.appendChild(h);
+    const table = document.createElement("table");
+    const thead = document.createElement("tr");
+    for (const name of ["フィールド", "サーバー側", "あなたの変更"]) {
+      const th = document.createElement("th"); th.textContent = name; thead.appendChild(th);
+    }
+    table.appendChild(thead);
+    for (const d of cf.diff || []) {
+      const tr = document.createElement("tr");
+      const tdF = document.createElement("td"); tdF.textContent = d.field;
+      const tdS = document.createElement("td"); tdS.textContent = fmtVal(d.server);
+      const tdC = document.createElement("td"); tdC.textContent = fmtVal(d.client);
+      if (d.differs) { tdS.style.background = "#fdf0f0"; tdC.style.background = "#f0f7f0"; }
+      tr.append(tdF, tdS, tdC);
+      table.appendChild(tr);
+    }
+    box.appendChild(table);
+    const row = document.createElement("p");
+    const bServer = document.createElement("button");
+    bServer.className = "secondary";
+    bServer.textContent = "サーバー側を採用";
+    const bClient = document.createElement("button");
+    bClient.textContent = "自分の変更を採用";
+    bClient.style.marginLeft = ".5rem";
+    const resolve = async (choice) => {
+      try {
+        await api("/api/v1/tenants/" + tenantId + "/sync-conflicts/" + cf.id + "/resolve", {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ choice }),
+        });
+        box.remove();
+        if (!$("list").children.length) load();
+      } catch (e) { $("msg").textContent = "解決に失敗しました: " + e.message; }
+    };
+    bServer.onclick = () => resolve("server");
+    bClient.onclick = () => resolve("client");
+    row.append(bServer, bClient);
+    box.appendChild(row);
+    list.appendChild(box);
+  }
+}
+(async () => { try { await load(); } catch (err) { $("msg").textContent = "読み込みに失敗しました: " + err.message; } })();
+`;
+  return c.html(shell("同期の競合", body, script));
 });
 
 pageRoutes.get("/invite/:token", async (c) => {

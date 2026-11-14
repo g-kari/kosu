@@ -521,6 +521,12 @@ describe("pagination, pwa and pages", () => {
     for (let i = 0; i < 5; i++) {
       await createTask(db, owner.cookie, h.projectPath, { title: `T${i}` });
     }
+    // Force identical created_at values: fast environments create all
+    // rows within one millisecond, which ties the sort prefix. The
+    // cursor must still page correctly (regression test for CI).
+    for (const row of db.tables.get("tasks") ?? []) {
+      row.created_at = "2026-01-01T00:00:00.000Z";
+    }
     const all = await call(db, `${h.projectPath}/tasks`, { cookie: owner.cookie });
     expect(((await j(all)).tasks as Json[]).length).toBe(5);
     const page1 = await call(db, `${h.projectPath}/tasks?limit=2`, {

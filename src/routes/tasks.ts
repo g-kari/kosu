@@ -291,15 +291,23 @@ taskRoutes.get(TASK_PATH, async (c) => {
       cursor = null;
     }
     if (!cursor) throw badRequest('"cursor" is not a valid pagination cursor');
-    const idx = tasks.findIndex(
-      (t) =>
-        Number(t.sort_order) > (cursor as { s: number }).s ||
-        (Number(t.sort_order) === (cursor as { s: number }).s &&
-          (t.created_at > (cursor as { c: string }).c ||
-            (t.created_at === (cursor as { c: string }).c &&
-              t.id > (cursor as { i: string }).i))),
-    );
-    start = idx === -1 ? tasks.length : idx;
+    const cur = cursor as { s: number; c: string; i: string };
+    // Prefer locating the cursor row by id: robust even when the
+    // (sort_order, created_at) prefix ties. Fall back to the tuple
+    // comparison when the row is gone (deleted between pages).
+    const byId = tasks.findIndex((t) => t.id === cur.i);
+    if (byId >= 0) {
+      start = byId + 1;
+    } else {
+      const idx = tasks.findIndex(
+        (t) =>
+          Number(t.sort_order) > cur.s ||
+          (Number(t.sort_order) === cur.s &&
+            (t.created_at > cur.c ||
+              (t.created_at === cur.c && t.id > cur.i))),
+      );
+      start = idx === -1 ? tasks.length : idx;
+    }
   }
   const page = tasks.slice(start, start + limit);
   const last = page[page.length - 1];

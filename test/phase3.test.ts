@@ -607,3 +607,49 @@ describe("recurrence, templates, duplication, bulk, archive, recent", () => {
     ).toBe(true);
   });
 });
+
+describe("attachments permission checks (standing rule)", () => {
+  it("denies downloads to other tenants and to anonymous callers", async () => {
+    const db = new FakeDb();
+    const owner = await setupOwner(db);
+    const h = await buildHierarchy(db, owner.cookie);
+    const task = await createTask(db, owner.cookie, h.projectPath, {
+      title: "権限チェック用",
+    });
+    const env = makeEnv(db);
+    const upload = await app.request(
+      `${ORIGIN}${h.projectPath}/tasks/${task.id}/attachments`,
+      {
+        method: "POST",
+        headers: {
+          cookie: owner.cookie,
+          origin: ORIGIN,
+          "x-file-name": encodeURIComponent("secret.txt"),
+          "content-type": "text/plain",
+        },
+        body: new TextEncoder().encode("秘密の内容"),
+      },
+      env,
+    );
+    expect(upload.status).toBe(201);
+    const attachment = (await j(upload)).attachment as Json;
+
+    // Another tenant's owner: a legitimate user, but the wrong tenant.
+    const other = await setupSecondUser(db, "other-tenant@example.com");
+    await buildHierarchy(db, other.cookie);
+    const cross = await call(db, `${h.tenantPath}/attachments/${attachment.id}`, {
+      cookie: other.cookie,
+    });
+    expect(cross.status).toBe(404);
+
+    // Anonymous: no session, no API key.
+    const anon = await call(db, `${h.tenantPath}/attachments/${attachment.id}`);
+    expect(anon.status).toBe(401);
+
+    // Listing under the project is guarded the same way.
+    const list = await call(db, `${h.projectPath}/tasks/${task.id}/attachments`, {
+      cookie: other.cookie,
+    });
+    expect(list.status).toBe(404);
+  });
+});

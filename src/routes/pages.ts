@@ -29,18 +29,18 @@ export function jsonForScript(value: unknown): string {
 const darkRules = (root: string): string => `
 ${root} { color-scheme: dark; }
 ${root} body { background: #14141c; color: #e9e9f2; }
-${root} .card { border-color: #3a3a4f; }
+${root} .card { border-top-color: #8fb0ff; }
 ${root} td, ${root} th { border-bottom-color: #33334a; }
 ${root} .muted { color: #a2a2ba; }
 ${root} a { color: #8fb0ff; }
-${root} button.secondary { background: #26263a; color: #8fb0ff; }
+${root} button.secondary { background: #26263a; color: #8fb0ff; border-color: #8fb0ff; }
 ${root} input, ${root} select, ${root} textarea { background: #1d1d2a; color: #e9e9f2; border: 1px solid #3a3a4f; }
 ${root} #palette { background: #1d1d2a; color: #e9e9f2; border-color: #3a3a4f; }
 ${root} .topbar, ${root} .detail { border-color: #3a3a4f; }
 ${root} .sidebar nav a:hover { background: #26263a; }
 ${root} .sidebar nav a.active { background: #2456c8; color: #fff; }
 ${root} .tag { border-color: #3a3a4f; }
-${root} .chip { background: #26263a; color: #8fb0ff; }
+${root} .chip { background: #26263a; color: #8fb0ff; border-color: #8fb0ff; }
 ${root} .timer-chip { background: #1d2a4a; border-color: #35507e; }
 ${root} .comment { border-bottom-color: #33334a; }
 ${root} .dayhead { border-bottom-color: #3a3a4f; }
@@ -54,21 +54,21 @@ ${darkRules(':root:not([data-theme="light"])')}
 ${darkRules(':root[data-theme="dark"]')}
 body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 960px; padding: 0 1rem; color: #1a1a2e; }
 h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 2rem; }
-.cards { display: flex; gap: 1rem; flex-wrap: wrap; }
-.card { border: 1px solid #ccd; border-radius: 8px; padding: 1rem 1.25rem; min-width: 180px; }
+.cards { display: flex; gap: 1.5rem 2rem; flex-wrap: wrap; }
+.card { border: 0; border-top: 3px solid #2456c8; border-radius: 0; padding: .6rem 0 0; min-width: 180px; }
 .card .big { font-size: 1.8rem; font-weight: 700; }
 .muted { color: #667; font-size: .85rem; }
 table { border-collapse: collapse; width: 100%; }
 td, th { border-bottom: 1px solid #e3e3ee; padding: .4rem .5rem; text-align: left; }
 button { background: #2456c8; color: #fff; border: 0; border-radius: 6px; padding: .55rem 1.1rem; cursor: pointer; }
-button.secondary { background: #eef; color: #2456c8; }
+button.secondary { background: #fff; color: #2456c8; border: 1px solid #2456c8; }
 .warn { color: #b3541e; font-weight: 600; }
 .err { color: #b00020; }
 a { color: #2456c8; }
 :focus-visible { outline: 3px solid #e07b00; outline-offset: 2px; }
 .skip { position: absolute; left: -9999px; top: 0; background: #2456c8; color: #fff; padding: .6rem 1rem; z-index: 50; }
 .skip:focus { left: 0; }
-#palette { border: 1px solid #ccd; border-radius: 10px; padding: 1rem; width: min(560px, 92vw); }
+#palette { border: 2px solid #2456c8; border-radius: 0; padding: 1rem; width: min(560px, 92vw); }
 #palette input { width: 100%; padding: .5rem; font-size: 1rem; box-sizing: border-box; }
 #palette ul { list-style: none; margin: .5rem 0 0; padding: 0; max-height: 320px; overflow: auto; }
 #palette li { padding: .45rem .5rem; border-radius: 6px; cursor: pointer; }
@@ -78,24 +78,24 @@ a { color: #2456c8; }
 .sidebar { width: 190px; flex: none; position: sticky; top: 1rem; }
 .sidebar .brand { font-size: 1.25rem; font-weight: 700; margin-bottom: .75rem; }
 .sidebar nav a { display: block; padding: .45rem .6rem; border-radius: 6px; text-decoration: none; color: inherit; }
-.sidebar nav a:hover { background: #eef1f8; }
+.sidebar nav a:hover { background: #ececf1; }
 .sidebar nav a.active { background: #2456c8; color: #fff; }
 .sidebar .side-sec { margin-top: 1.25rem; }
 .content { flex: 1; min-width: 0; }
 .content h1:first-child { margin-top: 0; }
-.topbar { display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: center; border: 1px solid #ccd; border-radius: 8px; padding: .6rem .8rem; margin-bottom: 1.25rem; }
+.topbar { display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: center; border: 0; border-bottom: 2px solid #ccd; border-radius: 0; padding: .6rem 0; margin-bottom: 1.25rem; }
 .topbar select { max-width: 190px; }
 .topbar .spacer { flex: 1; }
-.timer-chip { display: inline-flex; gap: .5rem; align-items: center; background: #eef4ff; border: 1px solid #b9cdf5; border-radius: 999px; padding: .3rem .4rem .3rem .8rem; font-variant-numeric: tabular-nums; }
-.timer-chip button { padding: .25rem .7rem; border-radius: 999px; }
+.timer-chip { display: inline-flex; gap: .5rem; align-items: center; background: #fff; border: 2px solid #2456c8; border-radius: 4px; padding: .3rem .4rem .3rem .8rem; font-variant-numeric: tabular-nums; }
+.timer-chip button { padding: .25rem .7rem; border-radius: 4px; }
 .toolbar { display: flex; flex-wrap: wrap; gap: .6rem; align-items: flex-end; margin: 1rem 0; }
 .toolbar label { display: flex; flex-direction: column; gap: .25rem; font-size: .82rem; }
 .tag { display: inline-block; border: 1px solid #ccd; border-left: 6px solid #99a; border-radius: 4px; padding: .05rem .45rem; font-size: .78rem; margin-right: .3rem; }
-.chip { display: inline-block; border-radius: 999px; padding: .05rem .55rem; font-size: .78rem; background: #eef; color: #2456c8; }
+.chip { display: inline-block; border: 1px solid #2456c8; border-radius: 4px; padding: .05rem .55rem; font-size: .78rem; background: #fff; color: #2456c8; }
 .due-over { color: #b00020; font-weight: 600; }
 .due-soon { color: #b3541e; font-weight: 600; }
 .split { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 1.5rem; align-items: start; }
-.detail { border: 1px solid #ccd; border-radius: 8px; padding: 1rem 1.25rem; }
+.detail { border: 0; border-top: 3px solid #2456c8; border-radius: 0; padding: .6rem 0 0; }
 .detail h2 { margin-top: 0; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem 1rem; }
 .form-grid label { display: flex; flex-direction: column; gap: .25rem; font-size: .85rem; }
@@ -106,7 +106,7 @@ input[type="date"], input[type="time"], input[type="text"], input[type="number"]
 .dayhead { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #ccd; padding-bottom: .25rem; margin-top: 1.5rem; }
 .kv { display: grid; grid-template-columns: 150px 1fr; gap: .3rem .8rem; }
 tr.clickable { cursor: pointer; }
-tr.clickable:hover td { background: #f4f6fd; }
+tr.clickable:hover td { background: #f0f0f4; }
 @media (max-width: 860px) {
   .layout { flex-direction: column; }
   .sidebar { width: 100%; position: static; }
@@ -114,6 +114,18 @@ tr.clickable:hover td { background: #f4f6fd; }
   .sidebar nav a { display: inline-block; }
   .split { grid-template-columns: 1fr; }
   .form-grid { grid-template-columns: 1fr; }
+}
+.site-footer { margin-top: 3rem; border-top: 1px solid #ccd; padding-top: 1rem; font-size: .85rem; color: #667; display: flex; gap: .4rem 1.25rem; flex-wrap: wrap; align-items: baseline; }
+.timer-dot { width: .55rem; height: .55rem; border-radius: 50%; background: #b00020; flex: none; animation: kosu-pulse 1.6s ease-in-out infinite; }
+.bars .bar { transform-origin: left center; transform-box: fill-box; animation: kosu-grow .5s ease-out; }
+main { animation: kosu-fade .25s ease-out; }
+#palette { animation: kosu-fade .18s ease-out; }
+button, .sidebar nav a { transition: background-color .15s ease, color .15s ease; }
+@keyframes kosu-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes kosu-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes kosu-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .2; } }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
 `;
 
@@ -152,7 +164,7 @@ export function shell(
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
 <title>${title} — Kosu</title><style>${STYLE}</style>${opts.wide ? "<style>body { max-width: 1320px; }</style>" : ""}</head>
-<body><a class="skip" href="#main">本文へ移動</a><main id="main">${body}</main>${palette}<script>${script}</script>${chrome}${sw}</body></html>`;
+<body><a class="skip" href="#main">本文へ移動</a><main id="main">${body}</main><footer class="site-footer"><span>Kosu</span><a href="/terms">${t(locale, "nav.terms")}</a><a href="/privacy">${t(locale, "nav.privacy")}</a><a href="/health">/health (JSON)</a></footer>${palette}<script>${script}</script>${chrome}${sw}</body></html>`;
 }
 
 /** Command palette (phase 5 item 10): Cmd/Ctrl+K opens a dialog that
@@ -327,7 +339,7 @@ const fmtDay = (t) => { const d = new Date(t); return (d.getUTCMonth()+1) + "/" 
       el("text", { x: 4, y: y + 16, "font-size": 12 }, t.title.length > 24 ? t.title.slice(0, 24) + "…" : t.title);
       const s = t.start_date ? parse(t.start_date) : parse(t.due_date);
       const e = t.due_date ? parse(t.due_date) + DAY : s + DAY;
-      const color = t.status === "done" ? "#8a8" : t.status === "doing" ? "#2456c8" : "#99a";
+      const color = t.status === "done" ? "#3d9970" : t.status === "doing" ? "#2456c8" : "#99a";
       el("rect", { x: x(s), y: y + 5, width: Math.max(W, x(e) - x(s)), height: 14, rx: 3, fill: color });
       if (t.estimate_minutes) el("text", { x: x(e) + 4, y: y + 16, "font-size": 10, fill: "#667" }, "見積 " + t.estimate_minutes + "分");
     });
@@ -417,7 +429,7 @@ async function load() {
       const tdF = document.createElement("td"); tdF.textContent = d.field;
       const tdS = document.createElement("td"); tdS.textContent = fmtVal(d.server);
       const tdC = document.createElement("td"); tdC.textContent = fmtVal(d.client);
-      if (d.differs) { tdS.style.background = "#fdf0f0"; tdC.style.background = "#f0f7f0"; }
+      if (d.differs) { tdS.style.boxShadow = "inset 0 0 0 2px #b00020"; tdC.style.boxShadow = "inset 0 0 0 2px #2e7d32"; }
       tr.append(tdF, tdS, tdC);
       table.appendChild(tr);
     }
@@ -464,7 +476,7 @@ pageRoutes.get("/app/settings/integrations", async (c) => {
 <p class="muted" id="who"></p>
 <div id="notice" class="card" style="display:none"></div>
 <h2>連携一覧</h2>
-<table><thead><tr><th>名前</th><th>種別</th><th>状態</th><th>最終同期</th><th></th></tr></thead><tbody id="conns"></tbody></table>
+<table><thead><tr><th scope="col">名前</th><th scope="col">種別</th><th scope="col">状態</th><th scope="col">最終同期</th><th scope="col"></th></tr></thead><tbody id="conns"></tbody></table>
 <h2>連携を追加</h2>
 <form id="createForm">
 <p>種別
@@ -487,15 +499,15 @@ pageRoutes.get("/app/settings/integrations", async (c) => {
 <p><button type="submit">追加する</button></p>
 </form>
 <h2>同期履歴</h2>
-<table><thead><tr><th>日時</th><th>種別</th><th>方法</th><th>結果</th><th>内容</th></tr></thead><tbody id="runs"></tbody></table>
+<table><thead><tr><th scope="col">日時</th><th scope="col">種別</th><th scope="col">方法</th><th scope="col">結果</th><th scope="col">内容</th></tr></thead><tbody id="runs"></tbody></table>
 <h2>iCal フィード（タスク期限の購読）</h2>
 <p class="muted">期限のあるタスクをカレンダーアプリで購読できます。フィード URL は作成時に1回だけ表示します。</p>
 <p><button id="icalCreate" class="secondary">フィードを作成</button></p>
-<table><thead><tr><th>ラベル</th><th>作成日時</th><th>最終アクセス</th><th></th></tr></thead><tbody id="feeds"></tbody></table>
+<table><thead><tr><th scope="col">ラベル</th><th scope="col">作成日時</th><th scope="col">最終アクセス</th><th scope="col"></th></tr></thead><tbody id="feeds"></tbody></table>
 <h2>メールでタスク作成</h2>
 <p class="muted">転送サービスから POST するためのトークンをプロジェクトごとに発行します。受付 URL は作成時に1回だけ表示します。</p>
 <p>プロジェクト <select id="mProject"></select> <button id="mailCreate" class="secondary">トークンを発行</button></p>
-<table><thead><tr><th>ラベル</th><th>作成日時</th><th></th></tr></thead><tbody id="mailTokens"></tbody></table>
+<table><thead><tr><th scope="col">ラベル</th><th scope="col">作成日時</th><th scope="col"></th></tr></thead><tbody id="mailTokens"></tbody></table>
 <h2>Google カレンダー</h2>
 <p id="gcal" class="muted">確認中…</p>
 <h2>データ書き出し（バックアップ）</h2>

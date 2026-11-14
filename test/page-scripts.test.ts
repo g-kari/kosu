@@ -24,7 +24,7 @@ describe("inline script syntax", () => {
       const res = await call(db, path, { cookie: owner.cookie });
       expect(res.status, path).toBe(200);
       const html = await res.text();
-      const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(
+      const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map(
         (m) => m[1] as string,
       );
       expect(scripts.length, path).toBeGreaterThan(0);

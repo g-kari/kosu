@@ -12,8 +12,8 @@ export type Locale = "ja" | "en";
 
 const DICT = {
   "app.tagline": {
-    ja: "工数とタスクを静かに管理する",
-    en: "Quiet time & task tracking",
+    ja: "工数とタスクを記録・集計する",
+    en: "Time & task tracking with reports",
   },
   "nav.dashboard": { ja: "ダッシュボード", en: "Dashboard" },
   "nav.projects": { ja: "プロジェクト", en: "Projects" },

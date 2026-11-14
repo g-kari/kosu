@@ -36,7 +36,7 @@ import { OFFLINE_URL, assetUrl, prefsFor, sessionAccountId, shell } from "./page
 
 export const uiRoutes = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-export const APP_VERSION = "0.11.0";
+export const APP_VERSION = "0.12.0";
 
 /** The service identity JSON (moved from `GET /`, kept for compat). */
 export const SERVICE_IDENTITY = {
@@ -646,7 +646,7 @@ ${cta}
 <p class="muted">${en
     ? "Machine-readable status is at /health and /api/health. The MCP endpoint is POST /mcp (API key authentication)."
     : "状態確認の JSON は /health と /api/health にあります。MCP エンドポイントは POST /mcp（API キー認証）です。"}</p>
-<p><a href="/terms">${t(locale, "nav.terms")}</a> ／ <a href="/privacy">${t(locale, "nav.privacy")}</a></p>`;
+<p><a href="/terms">${t(locale, "nav.terms")}</a> ／ <a href="/privacy">${t(locale, "nav.privacy")}</a> ／ <a href="/design-system">デザインシステム</a></p>`;
   return c.html(shell("Kosu — 工数・タスク管理", body, "", { prefs }));
 });
 

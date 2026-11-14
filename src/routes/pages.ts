@@ -65,7 +65,7 @@ button.secondary { background: #fff; color: #2456c8; border: 1px solid #2456c8; 
 .warn { color: #b3541e; font-weight: 600; }
 .err { color: #b00020; }
 a { color: #2456c8; }
-:focus-visible { outline: 3px solid #e07b00; outline-offset: 2px; }
+:focus-visible { outline: 3px solid #c96a00; outline-offset: 2px; }
 .skip { position: absolute; left: -9999px; top: 0; background: #2456c8; color: #fff; padding: .6rem 1rem; z-index: 50; }
 .skip:focus { left: 0; }
 #palette { border: 2px solid #2456c8; border-radius: 0; padding: 1rem; width: min(560px, 92vw); }
@@ -339,7 +339,7 @@ const fmtDay = (t) => { const d = new Date(t); return (d.getUTCMonth()+1) + "/" 
       el("text", { x: 4, y: y + 16, "font-size": 12 }, t.title.length > 24 ? t.title.slice(0, 24) + "…" : t.title);
       const s = t.start_date ? parse(t.start_date) : parse(t.due_date);
       const e = t.due_date ? parse(t.due_date) + DAY : s + DAY;
-      const color = t.status === "done" ? "#3d9970" : t.status === "doing" ? "#2456c8" : "#99a";
+      const color = t.status === "done" ? "#3d9970" : t.status === "doing" ? "#2456c8" : "#7a7a8c";
       el("rect", { x: x(s), y: y + 5, width: Math.max(W, x(e) - x(s)), height: 14, rx: 3, fill: color });
       if (t.estimate_minutes) el("text", { x: x(e) + 4, y: y + 16, "font-size": 10, fill: "#667" }, "見積 " + t.estimate_minutes + "分");
     });
@@ -358,7 +358,7 @@ const fmtDay = (t) => { const d = new Date(t); return (d.getUTCMonth()+1) + "/" 
     svg.insertBefore(defs, svg.firstChild);
     data.milestones.forEach(m => {
       const mx = x(parse(m.date));
-      el("path", { d: "M" + mx + " 20 l6 6 l-6 6 l-6 -6 z", fill: "#e8a33d" });
+      el("path", { d: "M" + mx + " 20 l6 6 l-6 6 l-6 -6 z", fill: "#b97a1e" });
       el("text", { x: mx + 9, y: 30, "font-size": 11, fill: "#8a6414" }, m.name);
     });
     $("chart").appendChild(svg);

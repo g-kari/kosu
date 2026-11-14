@@ -36,7 +36,7 @@ import { prefsFor, sessionAccountId, shell } from "./pages";
 
 export const uiRoutes = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-export const APP_VERSION = "0.8.0";
+export const APP_VERSION = "0.8.1";
 
 /** The service identity JSON (moved from `GET /`, kept for compat). */
 export const SERVICE_IDENTITY = {
@@ -1670,7 +1670,7 @@ ui.onReady(async () => {
     el("text", { x: 4, y: y + 16, "font-size": 12 }, t.title.length > 24 ? t.title.slice(0, 24) + "…" : t.title);
     const s = t.start_date ? parseDay(t.start_date) : parseDay(t.due_date);
     const e = t.due_date ? parseDay(t.due_date) + DAY : s + DAY;
-    const color = t.status === "done" ? "#3d9970" : t.status === "doing" ? "#2456c8" : "#99a";
+    const color = t.status === "done" ? "#3d9970" : t.status === "doing" ? "#2456c8" : "#7a7a8c";
     el("rect", { x: x(s), y: y + 5, width: Math.max(W, x(e) - x(s)), height: 14, rx: 3, fill: color });
     if (t.estimate_minutes) el("text", { x: x(e) + 4, y: y + 16, "font-size": 10, fill: "#667" }, "見積 " + t.estimate_minutes + "分");
   });
@@ -1689,7 +1689,7 @@ ui.onReady(async () => {
   });
   data.milestones.forEach((m) => {
     const mx = x(parseDay(m.date));
-    el("path", { d: "M" + mx + " 20 l6 6 l-6 6 l-6 -6 z", fill: "#e8a33d" });
+    el("path", { d: "M" + mx + " 20 l6 6 l-6 6 l-6 -6 z", fill: "#b97a1e" });
     el("text", { x: mx + 9, y: 30, "font-size": 11, fill: "#8a6414" }, m.name);
   });
   $("chart").appendChild(svg);

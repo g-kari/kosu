@@ -44,6 +44,7 @@ ${root} .chip { background: #26263a; color: #8fb0ff; border-color: #8fb0ff; }
 ${root} .timer-chip { background: #1d2a4a; border-color: #35507e; }
 ${root} .comment { border-bottom-color: #33334a; }
 ${root} .dayhead { border-bottom-color: #3a3a4f; }
+${root} .toast { background: #26263a; color: #e9e9f2; border-color: #8fb0ff; }
 `;
 
 export const STYLE = `
@@ -108,6 +109,10 @@ input[type="date"], input[type="time"], input[type="text"], input[type="number"]
 .kv { display: grid; grid-template-columns: 150px 1fr; gap: .3rem .8rem; }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover td { background: #f0f0f4; }
+td a { display: inline-block; padding: .3rem .15rem; margin: -.3rem -.15rem; }
+#busybar { position: fixed; top: 0; left: 0; height: 3px; width: 35%; background: #2456c8; z-index: 90; display: none; animation: kosu-busy 1.1s ease-in-out infinite; }
+.toast { position: fixed; right: 12px; bottom: 12px; z-index: 70; background: #fff; color: #1a1a2e; border: 1px solid #2456c8; border-left: 4px solid #2456c8; padding: .6rem .9rem; font-size: .9rem; display: none; max-width: 82vw; }
+@keyframes kosu-busy { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
 @media (max-width: 860px) {
   .layout { flex-direction: column; }
   .sidebar { width: 100%; position: static; }
@@ -115,6 +120,11 @@ tr.clickable:hover td { background: #f0f0f4; }
   .sidebar nav a { display: inline-block; }
   .split { grid-template-columns: 1fr; }
   .form-grid { grid-template-columns: 1fr; }
+  button { min-height: 44px; }
+  input, select, textarea { min-height: 40px; }
+  .sidebar nav a { padding: .7rem .8rem; }
+  .timer-chip button { min-height: 36px; }
+  .topbar select { max-width: 150px; }
 }
 .site-footer { margin-top: 3rem; border-top: 1px solid #ccd; padding-top: 1rem; font-size: .85rem; color: #667; display: flex; gap: .4rem 1.25rem; flex-wrap: wrap; align-items: baseline; }
 .timer-dot { width: .55rem; height: .55rem; border-radius: 50%; background: #b00020; flex: none; animation: kosu-pulse 1.6s ease-in-out infinite; }
@@ -170,7 +180,7 @@ export function shell(
     prefs && prefs.theme !== "system" ? ` data-theme="${prefs.theme}"` : "";
   const palette = opts.appChrome
     ? `<dialog id="palette" aria-label="コマンドパレット">
-<input id="paletteInput" type="text" role="combobox" aria-expanded="true" aria-controls="paletteList" aria-autocomplete="list" placeholder="${t(locale, "palette.placeholder")}">
+<input id="paletteInput" type="text" role="combobox" aria-expanded="true" aria-controls="paletteList" aria-autocomplete="list" aria-label="コマンドパレット検索" placeholder="${t(locale, "palette.placeholder")}">
 <ul id="paletteList" role="listbox"></ul>
 </dialog>`
     : "";

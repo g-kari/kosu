@@ -4,6 +4,7 @@
  *   GET  /manifest.webmanifest   PWA manifest
  *   GET  /sw.js                  service worker (app-shell cache)
  *   GET  /icons/icon.svg         app icon
+ *   GET  /assets/:file           shared CSS/JS assets (hashed, immutable)
  *   GET  /terms                  terms of service (placeholder text)
  *   GET  /privacy                privacy policy (placeholder text)
  *   GET  /share/:token           read-only project progress page
@@ -15,7 +16,8 @@
  */
 import { Hono } from "hono";
 import { notFound } from "../errors";
-import { shell, prefsFor } from "./pages";
+import { PALETTE_JS, PALETTE_URL, STYLE, STYLE_URL, shell, prefsFor } from "./pages";
+import { UI_ASSET_URL, UI_SCRIPT, VAULT_ASSET_URL, VAULT_PANEL_SCRIPT } from "./ui";
 import {
   countRecentSubmissions,
   INTAKE_RATE_LIMIT,
@@ -59,8 +61,8 @@ const SERVICE_WORKER = `
 // Strategy: navigations are network-first with the cached shell as
 // fallback; static shell assets are cache-first. API responses are
 // never cached (they carry per-account data).
-const CACHE = "kosu-shell-v1";
-const SHELL_URLS = ["/app", "/manifest.webmanifest", "/icons/icon.svg"];
+const CACHE = "kosu-shell-v2";
+const SHELL_URLS = ["/app", "/manifest.webmanifest", "/icons/icon.svg", "${STYLE_URL}", "${PALETTE_URL}", "${UI_ASSET_URL}", "${VAULT_ASSET_URL}"];
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE).then((cache) => cache.addAll(SHELL_URLS)).then(() => self.skipWaiting())
@@ -107,6 +109,29 @@ public5Routes.get("/icons/icon.svg", (c) => {
   return c.body(ICON_SVG, 200, {
     "Content-Type": "image/svg+xml; charset=utf-8",
     "Cache-Control": "public, max-age=86400",
+  });
+});
+
+/**
+ * Phase 8: shared CSS/JS as external assets. The URLs carry a content
+ * hash (see assetUrl in routes/pages.ts), so responses are immutable:
+ * browsers and the service worker fetch each version exactly once and
+ * every later page view reuses the cache instead of re-downloading
+ * and re-parsing the same code inside every HTML page.
+ */
+const ASSETS: Record<string, { body: string; type: string }> = {
+  [STYLE_URL]: { body: STYLE, type: "text/css; charset=utf-8" },
+  [PALETTE_URL]: { body: PALETTE_JS, type: "text/javascript; charset=utf-8" },
+  [UI_ASSET_URL]: { body: UI_SCRIPT, type: "text/javascript; charset=utf-8" },
+  [VAULT_ASSET_URL]: { body: VAULT_PANEL_SCRIPT, type: "text/javascript; charset=utf-8" },
+};
+
+public5Routes.get("/assets/:file", (c) => {
+  const asset = ASSETS[`/assets/${c.req.param("file")}`];
+  if (!asset) throw notFound("Asset not found");
+  return c.body(asset.body, 200, {
+    "Content-Type": asset.type,
+    "Cache-Control": "public, max-age=31536000, immutable",
   });
 });
 

@@ -46,13 +46,14 @@ ${root} .comment { border-bottom-color: #33334a; }
 ${root} .dayhead { border-bottom-color: #3a3a4f; }
 `;
 
-const STYLE = `
+export const STYLE = `
 :root { color-scheme: light; }
 @media (prefers-color-scheme: dark) {
 ${darkRules(':root:not([data-theme="light"])')}
 }
 ${darkRules(':root[data-theme="dark"]')}
 body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 960px; padding: 0 1rem; color: #1a1a2e; }
+body.wide { max-width: 1320px; }
 h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 2rem; }
 .cards { display: flex; gap: 1.5rem 2rem; flex-wrap: wrap; }
 .card { border: 0; border-top: 3px solid #2456c8; border-radius: 0; padding: .6rem 0 0; min-width: 180px; }
@@ -129,12 +130,32 @@ button, .sidebar nav a { transition: background-color .15s ease, color .15s ease
 }
 `;
 
+/** Short content hash for cache-busting asset URLs (FNV-1a, hex). */
+export function assetHash(content: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < content.length; i++) {
+    h ^= content.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+/** Versioned asset URL: /assets/<name>-<hash>.<ext> (immutable caching). */
+export function assetUrl(name: string, ext: string, content: string): string {
+  return `/assets/${name}-${assetHash(content)}.${ext}`;
+}
+
+/** The shared stylesheet, served as a cacheable external asset (phase 8). */
+export const STYLE_URL = assetUrl("style", "css", STYLE);
+
 export interface ShellOptions {
   prefs?: UserPrefs | null;
   /** Include the command palette + service worker (app pages). */
   appChrome?: boolean;
   /** Widen the content column (phase 6 app layout). */
   wide?: boolean;
+  /** External scripts (hashed asset URLs) emitted before the inline script. */
+  scripts?: string[];
 }
 
 export function shell(
@@ -153,24 +174,27 @@ export function shell(
 <ul id="paletteList" role="listbox"></ul>
 </dialog>`
     : "";
-  const chrome = opts.appChrome ? PALETTE_SCRIPT : "";
+  const chrome = opts.appChrome ? `<script src="${PALETTE_URL}"></script>` : "";
   const sw = opts.appChrome
     ? `<script>if ("serviceWorker" in navigator) { navigator.serviceWorker.register("/sw.js").catch(() => {}); }</script>`
     : "";
+  const assetTags = (opts.scripts ?? [])
+    .map((u) => `<script src="${u}"></script>`)
+    .join("");
   return `<!doctype html>
 <html lang="${locale}"${themeAttr}><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#2456c8">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
-<title>${title} — Kosu</title><style>${STYLE}</style>${opts.wide ? "<style>body { max-width: 1320px; }</style>" : ""}</head>
-<body><a class="skip" href="#main">本文へ移動</a><main id="main">${body}</main><footer class="site-footer"><span>Kosu</span><a href="/terms">${t(locale, "nav.terms")}</a><a href="/privacy">${t(locale, "nav.privacy")}</a><a href="/health">/health (JSON)</a></footer>${palette}<script>${script}</script>${chrome}${sw}</body></html>`;
+<title>${title} — Kosu</title><link rel="stylesheet" href="${STYLE_URL}"></head>
+<body${opts.wide ? ' class="wide"' : ""}><a class="skip" href="#main">本文へ移動</a><main id="main">${body}</main><footer class="site-footer"><span>Kosu</span><a href="/terms">${t(locale, "nav.terms")}</a><a href="/privacy">${t(locale, "nav.privacy")}</a><a href="/health">/health (JSON)</a></footer>${palette}${assetTags}<script>${script}</script>${chrome}${sw}</body></html>`;
 }
 
 /** Command palette (phase 5 item 10): Cmd/Ctrl+K opens a dialog that
  * searches tasks across the default tenant's projects, creates a task
  * in the first project, and jumps between app pages. */
-const PALETTE_SCRIPT = `<script>
+export const PALETTE_JS = `
 (() => {
   const dlg = document.getElementById("palette");
   if (!dlg) return;
@@ -274,7 +298,10 @@ const PALETTE_SCRIPT = `<script>
     }
   });
 })();
-</script>`;
+`;
+
+/** Command palette script, served as a cacheable external asset (phase 8). */
+export const PALETTE_URL = assetUrl("palette", "js", PALETTE_JS);
 
 export async function sessionAccountId(c: Ctx): Promise<string | null> {
   return readSessionAccountId(

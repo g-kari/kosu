@@ -32,11 +32,11 @@ import { t, type Locale } from "../i18n";
 import type { UserPrefs } from "../prefs";
 import type { Env, Variables } from "../types";
 import type { Ctx } from "./http";
-import { prefsFor, sessionAccountId, shell } from "./pages";
+import { assetUrl, prefsFor, sessionAccountId, shell } from "./pages";
 
 export const uiRoutes = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-export const APP_VERSION = "0.8.1";
+export const APP_VERSION = "0.9.0";
 
 /** The service identity JSON (moved from `GET /`, kept for compat). */
 export const SERVICE_IDENTITY = {
@@ -50,7 +50,7 @@ export const SERVICE_IDENTITY = {
 /* Shared client library (context, chrome, vault)                       */
 /* ------------------------------------------------------------------ */
 
-const UI_SCRIPT = `
+export const UI_SCRIPT = `
 window.KosuUI = (() => {
   const $ = (id) => document.getElementById(id);
   async function api(path, opts) {
@@ -408,6 +408,9 @@ window.KosuUI = (() => {
 /* App shell (sidebar + topbar)                                         */
 /* ------------------------------------------------------------------ */
 
+/** Shared app script, served as a cacheable external asset (phase 8). */
+export const UI_ASSET_URL = assetUrl("ui", "js", UI_SCRIPT);
+
 type NavKey = "dashboard" | "tasks" | "time" | "gantt" | "reports" | "settings";
 
 function appPage(
@@ -417,6 +420,7 @@ function appPage(
   heading: string,
   inner: string,
   pageScript: string,
+  opts: { vault?: boolean } = {},
 ): string {
   const locale: Locale = prefs.locale;
   const items: Array<[NavKey, string, string]> = [
@@ -466,7 +470,6 @@ ${inner}
 </div>
 </div>`;
   const script =
-    UI_SCRIPT +
     `
 document.getElementById("logoutBtn").onclick = async () => {
   try { await fetch("/auth/logout", { method: "POST" }); } catch (e) {}
@@ -474,7 +477,12 @@ document.getElementById("logoutBtn").onclick = async () => {
 };
 ` +
     pageScript;
-  return shell(title, body, script, { prefs, appChrome: true, wide: true });
+  return shell(title, body, script, {
+    prefs,
+    appChrome: true,
+    wide: true,
+    scripts: opts.vault ? [UI_ASSET_URL, VAULT_ASSET_URL] : [UI_ASSET_URL],
+  });
 }
 
 /** Shared vault control panel (unlock / create / lock) as page HTML. */
@@ -493,7 +501,7 @@ const VAULT_PANEL_HTML = `
 <p id="vaultCodeOut" class="warn" style="display:none"></p>
 </div>`;
 
-const VAULT_PANEL_SCRIPT = `
+export const VAULT_PANEL_SCRIPT = `
 async function initVaultPanel(ui) {
   const $ = ui.$;
   async function render() {
@@ -611,6 +619,9 @@ ${cta}
 /* ------------------------------------------------------------------ */
 /* Dashboard                                                            */
 /* ------------------------------------------------------------------ */
+
+/** Vault panel script, served as a cacheable external asset (phase 8). */
+export const VAULT_ASSET_URL = assetUrl("vault", "js", VAULT_PANEL_SCRIPT);
 
 const DASHBOARD_SCRIPT = `
 const ui = window.KosuUI;
@@ -1324,15 +1335,12 @@ uiRoutes.get("/app/tasks", async (c) => {
   const prefs = await requirePrefs(c);
   if (!prefs) return c.redirect("/auth/login", 302);
   const locale = prefs.locale;
-  const script =
-    VAULT_PANEL_SCRIPT +
-    "\n" +
-    TASKS_SCRIPT.replaceAll(
-      "VAULT_HTML",
-      JSON.stringify(VAULT_PANEL_HTML),
-    );
+  const script = TASKS_SCRIPT.replaceAll(
+    "VAULT_HTML",
+    JSON.stringify(VAULT_PANEL_HTML),
+  );
   return c.html(
-    appPage(prefs, "tasks", t(locale, "tasks.title"), t(locale, "tasks.title"), TASKS_HTML, script),
+    appPage(prefs, "tasks", t(locale, "tasks.title"), t(locale, "tasks.title"), TASKS_HTML, script, { vault: true }),
   );
 });
 
@@ -2021,11 +2029,8 @@ uiRoutes.get("/app/settings", async (c) => {
   const prefs = await requirePrefs(c);
   if (!prefs) return c.redirect("/auth/login", 302);
   const locale = prefs.locale;
-  const script =
-    VAULT_PANEL_SCRIPT +
-    "\n" +
-    SETTINGS_SCRIPT.replaceAll("VAULT_HTML", JSON.stringify(VAULT_PANEL_HTML));
+  const script = SETTINGS_SCRIPT.replaceAll("VAULT_HTML", JSON.stringify(VAULT_PANEL_HTML));
   return c.html(
-    appPage(prefs, "settings", t(locale, "settings.title"), t(locale, "settings.title"), SETTINGS_HTML, script),
+    appPage(prefs, "settings", t(locale, "settings.title"), t(locale, "settings.title"), SETTINGS_HTML, script, { vault: true }),
   );
 });

@@ -33,6 +33,9 @@ const app = new Hono<{ Bindings: Env; Variables: Variables }>();
  * JS property assignments), so script-src needs no 'unsafe-inline'.
  * style *attributes* (dynamic widths etc.) stay allowed via
  * style-src-attr; style *elements* are nonce-locked.
+ * Phase 8: the shared stylesheet and the shared app scripts are
+ * external same-origin assets (routes/public5.ts), so 'self' is
+ * allowed alongside the nonce in script-src / style-src-elem.
  */
 app.use("*", async (c, next) => {
   await next();
@@ -52,8 +55,8 @@ app.use("*", async (c, next) => {
     "Content-Security-Policy",
     [
       "default-src 'self'",
-      `script-src 'nonce-${nonce}'`,
-      `style-src-elem 'nonce-${nonce}'`,
+      `script-src 'self' 'nonce-${nonce}'`,
+      `style-src-elem 'self' 'nonce-${nonce}'`,
       "style-src-attr 'unsafe-inline'",
       "img-src 'self' data:",
       "font-src 'self'",

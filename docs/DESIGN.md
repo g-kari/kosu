@@ -240,3 +240,8 @@
 - Workers（Hono 想定）、D1（migrations）、R2（添付・書き出しファイル用）
 - リポジトリ標準構成：public、CI（型・テスト必須チェック）、Renovate（自動マージ有効）
 - デプロイは当面 wrangler 手動（gizen 経由）、Workers Builds の Git 連携は後段
+
+## フェーズ8メモ（クライアントパフォーマンス、v0.9.0）
+- 共通CSS（8.6KB）・UIコア（13.2KB）・コマンドパレット（4.3KB）・ボールトパネル（1.8KB）を内容ハッシュ付き外部資産（/assets/<name>-<hash>.<ext>、immutable キャッシュ）として配信し、全ページのインライン埋め込みをやめた。ページ固有スクリプトはデータを含むため nonce 付きインラインのまま
+- CSP は script-src / style-src-elem に 'self' を追加（nonce と併用）。SW は kosu-shell-v2 で資産もシェルキャッシュ対象
+- 画面遷移ごとの HTML は 51〜81% 削減（例：/app 37.5KB→11.4KB、ガント 34.1KB→8.0KB）。詳細は docs/PHASE8.md

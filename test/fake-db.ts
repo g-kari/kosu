@@ -32,6 +32,23 @@ function parseConds(where: string | undefined, sql: string): Cond[] {
   });
 }
 
+function isNumericLike(value: unknown): boolean {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "string" && value.trim() !== "") {
+    return Number.isFinite(Number(value));
+  }
+  return false;
+}
+
+/** Type-aware compare: numbers compare numerically, strings as strings. */
+function compareValues(a: unknown, b: unknown): number {
+  if (isNumericLike(a) && isNumericLike(b)) {
+    const diff = Number(a) - Number(b);
+    return diff < 0 ? -1 : diff > 0 ? 1 : 0;
+  }
+  return String(a ?? "").localeCompare(String(b ?? ""));
+}
+
 function rowMatches(row: Row, conds: Cond[], bindings: unknown[]): boolean {
   for (const cond of conds) {
     const value = row[cond.col];
@@ -44,21 +61,22 @@ function rowMatches(row: Row, conds: Cond[], bindings: unknown[]): boolean {
       continue;
     }
     const expected = bindings[(cond.param as number) - 1];
+    const cmp = compareValues(value, expected);
     switch (cond.op) {
       case "=":
-        if (value !== expected) return false;
+        if (cmp !== 0) return false;
         break;
       case "<":
-        if (!((value as number) < (expected as number))) return false;
+        if (!(cmp < 0)) return false;
         break;
       case ">":
-        if (!((value as number) > (expected as number))) return false;
+        if (!(cmp > 0)) return false;
         break;
       case "<=":
-        if (!((value as number) <= (expected as number))) return false;
+        if (!(cmp <= 0)) return false;
         break;
       case ">=":
-        if (!((value as number) >= (expected as number))) return false;
+        if (!(cmp >= 0)) return false;
         break;
       default:
         throw new Error(`FakeDb: unsupported op ${cond.op}`);
@@ -102,9 +120,7 @@ class FakeStatement {
     if (m[4]) {
       const col = m[4];
       const dir = (m[5] as string).toUpperCase() === "DESC" ? -1 : 1;
-      rows.sort((a, b) =>
-        String(a[col] ?? "").localeCompare(String(b[col] ?? "")) * dir,
-      );
+      rows.sort((a, b) => compareValues(a[col], b[col]) * dir);
     }
     if (cols === "*") return rows.map((r) => ({ ...r }));
     const names = cols.split(",").map((s) => s.trim());

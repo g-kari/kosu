@@ -2,6 +2,10 @@ import { Hono } from "hono";
 import { ApiError } from "./errors";
 import { apiRoutes } from "./routes/api";
 import { authRoutes } from "./routes/auth";
+import { collabRoutes } from "./routes/collab";
+import { pageRoutes } from "./routes/pages";
+import { syncRoutes } from "./routes/sync";
+import { taskRoutes } from "./routes/tasks";
 import type { Env, Variables } from "./types";
 
 export type { Env } from "./types";
@@ -13,7 +17,7 @@ app.get("/", (c) =>
     name: "Kosu",
     service: "kosu",
     status: "ok",
-    version: "0.2.0",
+    version: "0.3.0",
   }),
 );
 
@@ -21,6 +25,10 @@ app.get("/health", (c) => c.json({ status: "ok" }));
 
 app.route("/", authRoutes);
 app.route("/", apiRoutes);
+app.route("/", taskRoutes);
+app.route("/", syncRoutes);
+app.route("/", collabRoutes);
+app.route("/", pageRoutes);
 
 app.notFound((c) =>
   c.json({ error: { code: "NOT_FOUND", message: "Not found" } }, 404),

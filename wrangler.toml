@@ -12,21 +12,22 @@ routes = [
 
 # Secrets are set with `wrangler secret put` and never listed here:
 # - SESSION_SECRET
-# - OIDC_CLIENT_SECRET (once the 0g0-id client is registered)
 # - FIELD_ENCRYPTION_KEY (base64-encoded 32-byte key for AES-GCM field encryption)
+# The OIDC client is public (token_endpoint_auth_method "none" + PKCE), so
+# there is no OIDC_CLIENT_SECRET.
 [vars]
 APP_ORIGIN = "https://kosu.0g0.xyz"
 OIDC_ISSUER = "https://id.0g0.xyz"
+# Registered via DCR (RFC 7591) on 2026-11-14; public client, PKCE S256, no secret.
+OIDC_CLIENT_ID = "1c52afa2e94016e8d2953f7c3467f3b2"
 OIDC_SCOPES = "openid profile email"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "kosu"
-# PLACEHOLDER: replace with the real database_id once the D1 database exists.
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "1b97f4a1-9885-4c11-8bc9-e75bb2a5bd2f"
 migrations_dir = "migrations"
 
 [[r2_buckets]]
 binding = "FILES"
-# PLACEHOLDER: the bucket is created in a later step.
 bucket_name = "kosu-files"

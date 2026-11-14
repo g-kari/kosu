@@ -597,3 +597,48 @@ apiRoutes.delete(`${KEYS_PATH}/:keyId`, async (c) => {
   );
   return c.json({ ok: true });
 });
+
+/* ------------------------------------------------------------------ */
+/* Members (phase 6: read-only directory for pickers and name lookup)   */
+/* ------------------------------------------------------------------ */
+
+apiRoutes.get("/api/v1/tenants/:tenantId/members", async (c) => {
+  const tenantId = c.req.param("tenantId");
+  const principal = await auth(c, tenantId);
+  await loadTenant(c.env, tenantId);
+  await guard(c.env, principal, { tenantId }, "read");
+  // Two-step lookup (no JOIN) so the test double and D1 agree.
+  const { results: memberships } = await c.env.DB.prepare(
+    "SELECT account_id, role FROM tenant_members WHERE tenant_id = ?1",
+  )
+    .bind(tenantId)
+    .all<{ account_id: string; role: string }>();
+  const members: Array<{
+    account_id: string;
+    display_name: string | null;
+    email: string | null;
+    role: string;
+  }> = [];
+  for (const m of memberships ?? []) {
+    const account = await c.env.DB.prepare(
+      "SELECT display_name, email FROM accounts WHERE id = ?1",
+    )
+      .bind(m.account_id)
+      .first<{ display_name: string | null; email: string | null }>();
+    members.push({
+      account_id: m.account_id,
+      display_name: account?.display_name ?? null,
+      email: account?.email ?? null,
+      role: m.role,
+    });
+  }
+  members.sort((a, b) => {
+    if (a.display_name && b.display_name) {
+      return a.display_name.localeCompare(b.display_name);
+    }
+    if (a.display_name) return -1;
+    if (b.display_name) return 1;
+    return a.account_id.localeCompare(b.account_id);
+  });
+  return c.json({ members });
+});

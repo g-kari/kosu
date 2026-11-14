@@ -32,11 +32,11 @@ import { t, type Locale } from "../i18n";
 import type { UserPrefs } from "../prefs";
 import type { Env, Variables } from "../types";
 import type { Ctx } from "./http";
-import { assetUrl, prefsFor, sessionAccountId, shell } from "./pages";
+import { OFFLINE_URL, assetUrl, prefsFor, sessionAccountId, shell } from "./pages";
 
 export const uiRoutes = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-export const APP_VERSION = "0.9.0";
+export const APP_VERSION = "0.10.0";
 
 /** The service identity JSON (moved from `GET /`, kept for compat). */
 export const SERVICE_IDENTITY = {
@@ -481,7 +481,9 @@ document.getElementById("logoutBtn").onclick = async () => {
     prefs,
     appChrome: true,
     wide: true,
-    scripts: opts.vault ? [UI_ASSET_URL, VAULT_ASSET_URL] : [UI_ASSET_URL],
+    scripts: opts.vault
+      ? [OFFLINE_URL, UI_ASSET_URL, VAULT_ASSET_URL]
+      : [OFFLINE_URL, UI_ASSET_URL],
   });
 }
 

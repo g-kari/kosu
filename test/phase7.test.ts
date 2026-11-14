@@ -35,14 +35,16 @@ describe("phase 7 web compliance + design rules", () => {
     expect(page.status).toBe(200);
     const csp = page.headers.get("content-security-policy");
     expect(csp).toBeTruthy();
-    const m = /script-src 'nonce-([^']+)'/.exec(csp as string);
+    const m = /'nonce-([^']+)'/.exec(csp as string);
     expect(m).toBeTruthy();
     const nonce = (m as RegExpExecArray)[1];
-    expect(csp).toContain(`style-src-elem 'nonce-${nonce}'`);
+    expect(csp).toContain(`script-src 'self' 'nonce-${nonce}'`);
+    expect(csp).toContain(`style-src-elem 'self' 'nonce-${nonce}'`);
     expect(csp).not.toContain("script-src 'unsafe-inline'");
     const html = await page.text();
     expect(html).toContain(`<script nonce="${nonce}">`);
-    expect(html).toContain(`<style nonce="${nonce}">`);
+    // Phase 8: the stylesheet is a cacheable external asset, not inline.
+    expect(html).toContain('<link rel="stylesheet" href="/assets/style-');
     expect(html).not.toContain("<script>");
     expect(html).not.toContain("<style>");
     expect(page.headers.get("x-content-type-options")).toBe("nosniff");
@@ -62,8 +64,17 @@ describe("phase 7 web compliance + design rules", () => {
     const html = await page.text();
     // Footer landmark on every shell page.
     expect(html).toContain('<footer class="site-footer">');
-    // Reduced-motion support ships in the shared stylesheet.
-    expect(html).toContain("prefers-reduced-motion");
+    // Reduced-motion support ships in the shared stylesheet (external
+    // asset since phase 8).
+    const cssHref = /<link rel="stylesheet" href="([^"]+)">/.exec(html);
+    expect(cssHref).toBeTruthy();
+    const cssRes = await call(db, (cssHref as RegExpExecArray)[1]!);
+    expect(cssRes.status).toBe(200);
+    const css = await cssRes.text();
+    expect(css).toContain("prefers-reduced-motion");
+    for (const pastel of ["#eef4ff", "#b9cdf5", "#f4f6fd", "#fdf0f0", "#f0f7f0"]) {
+      expect(css).not.toContain(pastel);
+    }
     // Diagram-first: the landing carries the flow diagram.
     expect(html).toContain("流れ：工数とタスクを記録し");
     // No poem-like copy (the old tagline), no pastel tints.
@@ -84,7 +95,9 @@ describe("phase 7 web compliance + design rules", () => {
     expect(html).toContain('aria-current="page"');
     expect(html).toContain('id="projChart"');
     expect(html).toContain('<th scope="col">');
-    expect(html).toContain("timer-dot");
+    const appCssHref = /<link rel="stylesheet" href="([^"]+)">/.exec(html);
+    const appCss = await (await call(db, (appCssHref as RegExpExecArray)[1]!)).text();
+    expect(appCss).toContain("timer-dot");
     for (const emoji of ["🔒", "⏱", "⚠"]) {
       expect(html).not.toContain(emoji);
     }

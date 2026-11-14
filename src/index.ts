@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import { ApiError } from "./errors";
 import { runDeadlineReminders } from "./notify";
+import { runDeadlineEscalations } from "./escalation";
+import { runDueReports } from "./report-builder";
 import { apiRoutes } from "./routes/api";
 import { authRoutes } from "./routes/auth";
 import { collabRoutes } from "./routes/collab";
@@ -8,6 +10,8 @@ import { integrationRoutes } from "./routes/integrations";
 import { mcpRoutes } from "./routes/mcp";
 import { opsRoutes } from "./routes/ops";
 import { pageRoutes } from "./routes/pages";
+import { phase5Routes } from "./routes/phase5";
+import { public5Routes } from "./routes/public5";
 import { publicInRoutes } from "./routes/public-in";
 import { syncRoutes } from "./routes/sync";
 import { taskRoutes } from "./routes/tasks";
@@ -23,7 +27,7 @@ app.get("/", (c) =>
     name: "Kosu",
     service: "kosu",
     status: "ok",
-    version: "0.5.0",
+    version: "0.6.0",
   }),
 );
 
@@ -39,6 +43,8 @@ app.route("/", opsRoutes);
 app.route("/", integrationRoutes);
 app.route("/", mcpRoutes);
 app.route("/", publicInRoutes);
+app.route("/", phase5Routes);
+app.route("/", public5Routes);
 app.route("/", pageRoutes);
 
 app.notFound((c) =>
@@ -76,6 +82,18 @@ async function scheduled(
         console.log("deadline reminders", JSON.stringify(result));
       } catch (err) {
         console.error("deadline reminders failed", err);
+      }
+      try {
+        const esc = await runDeadlineEscalations(env);
+        console.log("deadline escalations", JSON.stringify(esc));
+      } catch (err) {
+        console.error("deadline escalations failed", err);
+      }
+      try {
+        const reports = await runDueReports(env);
+        console.log("scheduled reports", JSON.stringify(reports));
+      } catch (err) {
+        console.error("scheduled reports failed", err);
       }
     })(),
   );

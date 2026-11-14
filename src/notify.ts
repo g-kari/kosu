@@ -39,6 +39,10 @@ export const NOTIFICATION_KINDS = [
   "change_request_decided",
   "deadline_reminder",
   "sync_conflict",
+  // Phase 5 kinds.
+  "automation",
+  "login_alert",
+  "report_ready",
 ] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
 

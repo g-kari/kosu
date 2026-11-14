@@ -32,6 +32,8 @@ import type {
 
 export interface RecurrenceInput {
   freq: "daily" | "weekly" | "monthly";
+  /** Phase 5: 'schedule' (phase 3) or 'completion' based dating. */
+  basis: "schedule" | "completion";
   interval: number;
   byWeekdays: number[] | null;
   endDate: string | null;
@@ -45,6 +47,11 @@ export function parseRecurrenceInput(
   if (freq !== "daily" && freq !== "weekly" && freq !== "monthly") {
     throw badRequest('"freq" must be daily, weekly or monthly');
   }
+  const basisRaw = body["basis"] ?? "schedule";
+  if (basisRaw !== "schedule" && basisRaw !== "completion") {
+    throw badRequest('"basis" must be schedule or completion');
+  }
+  const basis = basisRaw as "schedule" | "completion";
   const interval = body["interval"] ?? 1;
   if (
     typeof interval !== "number" ||
@@ -88,7 +95,7 @@ export function parseRecurrenceInput(
     }
     maxCount = raw;
   }
-  return { freq, interval, byWeekdays, endDate, maxCount };
+  return { freq, basis, interval, byWeekdays, endDate, maxCount };
 }
 
 export function publicRecurrence(row: RecurrenceRuleRow) {
@@ -106,6 +113,7 @@ export function publicRecurrence(row: RecurrenceRuleRow) {
     tenant_id: row.tenant_id,
     task_id: row.task_id,
     freq: row.freq,
+    basis: row.basis ?? "schedule",
     interval: Number(row.interval_count),
     by_weekdays: byWeekdays,
     end_date: row.end_date,
@@ -140,10 +148,11 @@ export async function putRecurrenceRule(
   const existing = await getRecurrenceRule(env, task.id);
   if (existing) {
     await env.DB.prepare(
-      "UPDATE recurrence_rules SET freq = ?1, interval_count = ?2, by_weekday_json = ?3, end_date = ?4, max_count = ?5, active = ?6, updated_at = ?7 WHERE id = ?8",
+      "UPDATE recurrence_rules SET freq = ?1, basis = ?2, interval_count = ?3, by_weekday_json = ?4, end_date = ?5, max_count = ?6, active = ?7, updated_at = ?8 WHERE id = ?9",
     )
       .bind(
         input.freq,
+        input.basis,
         input.interval,
         input.byWeekdays ? JSON.stringify(input.byWeekdays) : null,
         input.endDate,
@@ -156,6 +165,7 @@ export async function putRecurrenceRule(
     return {
       ...existing,
       freq: input.freq,
+      basis: input.basis,
       interval_count: input.interval,
       by_weekday_json: input.byWeekdays
         ? JSON.stringify(input.byWeekdays)
@@ -171,6 +181,7 @@ export async function putRecurrenceRule(
     tenant_id: task.tenant_id,
     task_id: task.id,
     freq: input.freq,
+    basis: input.basis,
     interval_count: input.interval,
     by_weekday_json: input.byWeekdays
       ? JSON.stringify(input.byWeekdays)
@@ -184,10 +195,11 @@ export async function putRecurrenceRule(
     updated_at: now,
   };
   await env.DB.prepare(
-    "INSERT INTO recurrence_rules (id, tenant_id, task_id, freq, interval_count, by_weekday_json, end_date, max_count, generated_count, active, created_by_account_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+    "INSERT INTO recurrence_rules (id, tenant_id, task_id, freq, basis, interval_count, by_weekday_json, end_date, max_count, generated_count, active, created_by_account_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
   )
     .bind(
-      row.id, row.tenant_id, row.task_id, row.freq, row.interval_count,
+      row.id, row.tenant_id, row.task_id, row.freq, row.basis,
+      row.interval_count,
       row.by_weekday_json, row.end_date, row.max_count, 0, 1,
       row.created_by_account_id, now, now,
     )
@@ -445,6 +457,8 @@ export async function duplicateTask(
       dueDate: original.due_date,
       sortOrder: original.sort_order,
       estimateMinutes: original.estimate_minutes,
+      estimatePoints: original.estimate_points ?? null,
+      estimateSize: original.estimate_size ?? null,
     };
     const copy = await insertTask(env, project, input, source);
     idMap.set(original.id, copy.id);

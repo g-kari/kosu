@@ -34,6 +34,8 @@ import {
   runConnectionSync,
 } from "./integrations";
 import { addLink, listLinks, parseLinkInput, publicLink } from "./links";
+import { runAutomationRules } from "./automation";
+import { assertWithinLimits } from "./usage";
 import { resolvePriorities, resolveStatuses } from "./workflow";
 import {
   applyTaskPatch,
@@ -131,6 +133,8 @@ export const MCP_TOOLS: McpTool[] = [
         due_date: { type: "string", description: "YYYY-MM-DD" },
         sort_order: { type: "integer" },
         estimate_minutes: { type: "integer" },
+        estimate_points: { type: "number" },
+        estimate_size: { type: "string", description: "XS|S|M|L|XL" },
       },
       ["tenant_id", "project_id", "title"],
     ),
@@ -154,6 +158,8 @@ export const MCP_TOOLS: McpTool[] = [
         due_date: { type: "string" },
         sort_order: { type: "integer" },
         estimate_minutes: { type: "integer" },
+        estimate_points: { type: "number" },
+        estimate_size: { type: "string", description: "XS|S|M|L|XL" },
       },
       ["tenant_id", "project_id", "task_id"],
     ),
@@ -459,9 +465,18 @@ export async function callMcpTool(
         dueDate: parsed.dueDate ?? null,
         sortOrder: parsed.sortOrder ?? 0,
         estimateMinutes: parsed.estimateMinutes ?? null,
+        estimatePoints: parsed.estimatePoints ?? null,
+        estimateSize: parsed.estimateSize ?? null,
       };
+      await assertWithinLimits(env, tenantId, "task");
       const row = await insertTask(env, project, input, {
         accountId: principal.accountId,
+      });
+      await runAutomationRules(env, {
+        tenantId,
+        trigger: "task_created",
+        task: row,
+        actorAccountId: principal.accountId,
       });
       return { task: publicTask(row) };
     }
@@ -483,6 +498,30 @@ export async function callMcpTool(
       const row = await applyTaskPatch(env, task, parsed, {
         accountId: principal.accountId,
       });
+      if (row.status !== task.status) {
+        await runAutomationRules(env, {
+          tenantId,
+          trigger: "task_status_changed",
+          task: row,
+          before: {
+            status: task.status,
+            assigneeAccountId: task.assignee_account_id,
+          },
+          actorAccountId: principal.accountId,
+        });
+      }
+      if (row.assignee_account_id !== task.assignee_account_id) {
+        await runAutomationRules(env, {
+          tenantId,
+          trigger: "task_assigned",
+          task: row,
+          before: {
+            status: task.status,
+            assigneeAccountId: task.assignee_account_id,
+          },
+          actorAccountId: principal.accountId,
+        });
+      }
       return { task: publicTask(row) };
     }
     case "kosu_list_time_entries": {

@@ -46,6 +46,13 @@ export function weekStart(date: string): string {
   return addDays(date, -(isoWeekday(date) - 1));
 }
 
+/** Start of the week containing `date`, for an ISO weekday (1=Mon..7=Sun). */
+export function weekStartOn(date: string, isoDow: number): string {
+  const dow = Math.min(7, Math.max(1, Math.trunc(isoDow) || 1));
+  const delta = (isoWeekday(date) - dow + 7) % 7;
+  return addDays(date, -delta);
+}
+
 /** Every date from `from` to `to` inclusive (both YYYY-MM-DD). */
 export function dateRange(from: string, to: string): string[] {
   const out: string[] = [];

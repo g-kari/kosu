@@ -170,7 +170,7 @@
 - **テナント書き出し**: オーナーのみ。暗号化フィールドは暗号文のまま、秘密情報（トークン類・ハッシュ・セッション等）は除外し `has_secret` フラグのみ残す
 - **設定画面**: `/app/settings/integrations`（連携 CRUD・同期・履歴、iCal フィード、メール受付トークン、Google カレンダー状態、書き出し導線）
 
-### フェーズ5：拡張と運用
+### フェーズ5：拡張と運用（完了）
 - 自動化ルール（状態変化や PR マージをきっかけにした自動処理）
 - プロジェクトテンプレート、完了ベースの繰り返し
 - カスタムレポートビルダーと定期配信
@@ -189,6 +189,30 @@
 - 全体管理画面（テナント横断の運営用）
 - 利用規約・プライバシーポリシーの画面
 - 初期設定ウィザードとサンプルデータ
+
+#### フェーズ5の実装メモ（2026-11-14、v0.6.0）
+
+- **自動化ルール**（migration 0006、`src/automation.ts`）: トリガは task_created / task_status_changed / task_assigned / pr_merged。条件は from_status / to_status / assignee_account_id（すべて任意、AND）。動作は set_status / set_assignee / notify（担当・ウォッチャー・テナント管理者）。ルールはテナント全体またはプロジェクト単位。実行は呼び出し側（REST / MCP / GitHub Webhook）から行い、ルールの動作はエンジンを再入させない（無限ループ防止）。全実行（一致・不一致・失敗）を automation_runs に記録。CRUD は `/api/v1/tenants/:tenantId/automation-rules`
+- **プロジェクトテンプレート**（`src/project-templates.ts`）: プロジェクト全体（タスク・依存・マイルストーン）を日付オフセット付き JSON として project_templates に保存し、開始日を指定して別プロジェクトとして展開する。フェーズ3の単体タスク用テンプレート（task_templates）とは別物
+- **完了ベースの繰り返し**: recurrence_rules に basis（schedule = 従来、completion = 完了日基準で次回日付を決め、開始→期限の期間は維持）を追加
+- **カスタムレポート**: report_definitions（フェーズ3レポートのパラメータ＋範囲 last_days / this_month / last_month / custom＋スケジュール off / daily / weekly / monthly）。手動実行と Cron 実行の結果は report_runs に保存し、作成者へ report_ready 通知（アプリ内＋Webhook）。メール基盤がないため配信はこの2経路のみ
+- **見積もり単位**: tasks に estimate_points（数値）と estimate_size（XS/S/M/L/XL）を追加し、分数見積もりと併記可能にした。REST / MCP の両方で入出力可
+- **締切エスカレーション**（`src/escalation.ts`）: テナント単位の設定（既定は無効）。段階1=期限の before_days 日前に担当者、段階2=超過 overdue_admin_days 日に担当＋ウォッチャー＋プロジェクト管理者＋テナント管理者、段階3=以降 repeat_days ごとに段階2の宛先へ再送。フェーズ3の基本リマインドとは dedupe キー（`esc:` 接頭辞）で分離
+- **PWA**: /manifest.webmanifest、/sw.js（アプリシェルのキャッシュ。API・認証はキャッシュしない）、/icons/icon.svg。全画面の shell に manifest リンクと SW 登録を含む
+- **表示設定**: user_prefs（テーマ system/light/dark、言語 ja/en、週の開始曜日 ISO 1-7）をアカウント単位で保存し、画面のテーマ・ダッシュボードの週集計に反映
+- **多言語（i18n の範囲）**: 辞書方式（`src/i18n.ts`、日英）。辞書経由にするのはアプリシェルのナビゲーション、ダッシュボードの見出し、表示設定画面、初期設定画面、利用規約・プライバシーのタイトル、コマンドパレットの定型文まで。API のエラーメッセージと業務画面の細かなラベルは日本語のまま（今後追加する文言は辞書へ先に入れる）
+- **コマンドパレット**: Cmd/Ctrl+K で開く `<dialog>`。タスク横断検索（既定テナントの全プロジェクト）、タスク作成（先頭プロジェクトへ）、画面移動。矢印キー＋Enter＋Esc のキーボード操作完結
+- **利用量と上限**（`src/usage.ts`）: tenant_limits（メンバー数・タスク数・添付容量、NULL=無制限）。到達時は作成系 API が 422 limit_exceeded（タスク作成 REST/MCP、添付、招待受理で強制）。利用量は GET .../usage で表示
+- **API キーの IP 制限**: api_keys.ip_allowlist（IPv4 / IPv4 CIDR / IPv6 完全一致）。認証時に cf-connecting-ip（なければ x-forwarded-for）と照合し、範囲外は 403。発行時指定と PATCH での変更に対応
+- **ログインアラート**: login_events に全ログインを記録。(IP, User-Agent) の組が初出の場合のみ login_alert をアプリ内通知（初回ログインは通知しない）
+- **アクセシビリティ**: スキップリンク、全要素の :focus-visible アウトライン、パレットの listbox セマンティクス、共有ページの progressbar ロール、コントラストの高い警告色（#e07b00 のフォーカスリング等）を shell に統一適用
+- **大量タスク最適化**: タスク一覧にキーセットページング（limit + cursor、(sort_order, created_at, id) のカーソル。未指定時は従来どおり全件）を追加。インデックスは tasks(project_id, sort_order, created_at)、tasks(tenant_id, due_date)、time_entries(tenant_id, account_id, started_at)
+- **進捗の公開リンク**: public_share_links（トークンはハッシュ保存、失効・期限つき）。/share/:token で完了率・ステータス別件数・期間・マイルストーンのみを表示（タスク名・本文は出さない）
+- **タスク受付フォーム**: intake_forms（プロジェクト単位トークン）。/intake/:token はタイトル必須のみ、ハニーポット欄つき、同一フォーム1時間10件のレート制限（intake_submissions で計数）。作成タスクはフォーム作成者のアカウントで記録
+- **アカウント削除**（`src/purge.ts`）: セッション認証のみ。確認はアカウントのメールアドレス（なければ "DELETE"）の入力。プレビュー（GET /api/v1/me/deletion-preview）で所有テナントと引き継ぎ要否を提示。オーナーのテナントは「後継者を指定して引き継ぎ」か「解散（テナントごと物理削除、R2 オブジェクト含む）」のどちらか必須で、どちらもない場合は削除を拒否。存続テナント内の作成物は後継者へ付け替え、nullable な参照は NULL 化、本人の個人データ（鍵・セッション・端末・通知・設定・ログイン履歴・所属）は物理削除。残存参照があれば失敗として中断（fail closed）
+- **全体管理画面**: 運営者は環境変数 OPERATOR_ACCOUNT_IDS（内部アカウント ID のカンマ区切り）で指定。GET /api/v1/admin/overview（セッション＋運営者のみ）がテナント一覧・利用量・連携状態（provider と有効フラグのみ）を返す。sub・資格情報は出さない
+- **利用規約・プライバシー**: /terms、/privacy にプレースホルダー文面を公開ページとして用意
+- **初期設定ウィザード**: /app/onboarding（手順ガイド＋サンプルデータ操作）。サンプルは専用ワークスペース配下にプロジェクト＋タスク3件を投入し、sample_projects で追跡して削除可能にする
 
 ## インフラ
 - Workers（Hono 想定）、D1（migrations）、R2（添付・書き出しファイル用）

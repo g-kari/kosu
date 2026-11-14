@@ -26,6 +26,7 @@ import {
   type FlowState,
 } from "../session";
 import { pkceChallenge, randomToken, sha256Hex, timingSafeEqual } from "../tokens";
+import { recordLoginEvent, requestIp } from "../security";
 import type { Env, Variables } from "../types";
 
 export const authRoutes = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -136,6 +137,18 @@ authRoutes.get("/auth/callback", async (c) => {
     );
     await ensurePersonalTenant(c.env, account);
     accountId = account.id;
+    // Phase 5: record the login; a new device/IP raises an alert.
+    // Alerting must never break sign-in, so failures are swallowed.
+    try {
+      await recordLoginEvent(
+        c.env,
+        account.id,
+        requestIp(c.req.raw.headers),
+        c.req.header("user-agent") ?? "",
+      );
+    } catch {
+      // ignored: login proceeds regardless
+    }
   } catch (err) {
     if (err instanceof ApiError) throw err;
     c.header("Set-Cookie", clearFlowCookie(c.req.url));

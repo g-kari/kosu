@@ -1,0 +1,276 @@
+/**
+ * Phase 5 public routes (no login required):
+ *
+ *   GET  /manifest.webmanifest   PWA manifest
+ *   GET  /sw.js                  service worker (app-shell cache)
+ *   GET  /icons/icon.svg         app icon
+ *   GET  /terms                  terms of service (placeholder text)
+ *   GET  /privacy                privacy policy (placeholder text)
+ *   GET  /share/:token           read-only project progress page
+ *   GET  /intake/:token          public task intake form
+ *   POST /intake/:token          create a task from the form
+ *
+ * Share/intake tokens resolve through hashes only; an unknown,
+ * revoked or expired token is always the same 404.
+ */
+import { Hono } from "hono";
+import { notFound } from "../errors";
+import { shell, prefsFor } from "./pages";
+import {
+  countRecentSubmissions,
+  INTAKE_RATE_LIMIT,
+  projectProgress,
+  recordSubmission,
+  resolveIntakeToken,
+  resolveShareToken,
+} from "../public-links";
+import { insertTask } from "../tasks";
+import { assertWithinLimits } from "../usage";
+import type { Env, Variables } from "../types";
+
+export const public5Routes = new Hono<{
+  Bindings: Env;
+  Variables: Variables;
+}>();
+
+const MANIFEST = {
+  name: "Kosu — 工数・タスク管理",
+  short_name: "Kosu",
+  description: "工数とタスクを管理するローカルファーストなサービス",
+  start_url: "/app",
+  scope: "/",
+  display: "standalone",
+  background_color: "#ffffff",
+  theme_color: "#2456c8",
+  icons: [
+    {
+      src: "/icons/icon.svg",
+      sizes: "any",
+      type: "image/svg+xml",
+      purpose: "any",
+    },
+  ],
+};
+
+const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="18" fill="#2456c8"/><text x="50" y="68" font-size="52" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-weight="700">K</text></svg>`;
+
+const SERVICE_WORKER = `
+// Kosu app shell service worker (phase 5).
+// Strategy: navigations are network-first with the cached shell as
+// fallback; static shell assets are cache-first. API responses are
+// never cached (they carry per-account data).
+const CACHE = "kosu-shell-v1";
+const SHELL_URLS = ["/app", "/manifest.webmanifest", "/icons/icon.svg"];
+self.addEventListener("install", (event) => {
+  event.waitUntil(
+    caches.open(CACHE).then((cache) => cache.addAll(SHELL_URLS)).then(() => self.skipWaiting())
+  );
+});
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())
+  );
+});
+self.addEventListener("fetch", (event) => {
+  const url = new URL(event.request.url);
+  if (event.request.method !== "GET") return;
+  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/auth/")) return;
+  if (event.request.mode === "navigate") {
+    event.respondWith(
+      fetch(event.request).catch(() => caches.match("/app"))
+    );
+    return;
+  }
+  if (SHELL_URLS.includes(url.pathname)) {
+    event.respondWith(
+      caches.match(event.request).then((hit) => hit || fetch(event.request))
+    );
+  }
+});
+`;
+
+public5Routes.get("/manifest.webmanifest", (c) => {
+  return c.body(JSON.stringify(MANIFEST), 200, {
+    "Content-Type": "application/manifest+json; charset=utf-8",
+    "Cache-Control": "public, max-age=3600",
+  });
+});
+
+public5Routes.get("/sw.js", (c) => {
+  return c.body(SERVICE_WORKER, 200, {
+    "Content-Type": "text/javascript; charset=utf-8",
+    "Cache-Control": "no-cache",
+  });
+});
+
+public5Routes.get("/icons/icon.svg", (c) => {
+  return c.body(ICON_SVG, 200, {
+    "Content-Type": "image/svg+xml; charset=utf-8",
+    "Cache-Control": "public, max-age=86400",
+  });
+});
+
+const TERMS_BODY = `
+<h1>利用規約</h1>
+<p class="muted">この文面はプレースホルダーです。正式な規約は公開前に差し替えます。</p>
+<h2>第1条（適用）</h2>
+<p>この利用規約（以下「本規約」）は、Kosu（以下「本サービス」）の利用条件を定めるものです。利用者は、本規約に同意のうえ本サービスを利用するものとします。</p>
+<h2>第2条（アカウント）</h2>
+<p>利用者は、連携する認証サービスのアカウントを用いて本サービスにログインします。アカウントの管理責任は利用者にあります。</p>
+<h2>第3条（データの取り扱い）</h2>
+<p>タスクの本文など一部のデータは、利用者の端末で暗号化されてからサーバーに保存されます。運営者は暗号化された内容を読むことができません。</p>
+<h2>第4条（禁止事項）</h2>
+<p>法令に違反する行為、本サービスの運営を妨げる行為、その他運営者が不適切と判断する行為を禁止します。</p>
+<h2>第5条（免責）</h2>
+<p>本サービスは現状有姿で提供されます。運営者は、本サービスの利用により生じた損害について、故意または重過失がある場合を除き責任を負いません。</p>
+`;
+
+const PRIVACY_BODY = `
+<h1>プライバシーポリシー</h1>
+<p class="muted">この文面はプレースホルダーです。正式なポリシーは公開前に差し替えます。</p>
+<h2>取得する情報</h2>
+<p>本サービスは、ログインに使う認証サービスから提供される識別子・表示名・メールアドレスと、利用者が登録したタスク・工数などのデータを保存します。タスク本文は端末側で暗号化され、サーバーは暗号文のみを保持します。</p>
+<h2>利用目的</h2>
+<p>取得した情報は、本サービスの提供・維持・改善のためにのみ利用します。</p>
+<h2>第三者提供</h2>
+<p>法令に基づく場合を除き、本人の同意なく個人情報を第三者に提供しません。連携機能は利用者が明示的に有効化した場合にのみ、指定した外部サービスへデータを送信します。</p>
+<h2>削除</h2>
+<p>利用者は、アカウント削除機能により、自分のアカウントと関連データを完全に削除できます。テナントのオーナーの場合は、引き継ぎまたは解散の手続きが必要です。</p>
+`;
+
+public5Routes.get("/terms", async (c) => {
+  const prefs = await prefsFor(c);
+  return c.html(shell("利用規約", TERMS_BODY, "", { prefs }));
+});
+
+public5Routes.get("/privacy", async (c) => {
+  const prefs = await prefsFor(c);
+  return c.html(shell("プライバシーポリシー", PRIVACY_BODY, "", { prefs }));
+});
+
+/* ------------------------------------------------------------------ */
+/* Public share page                                                    */
+/* ------------------------------------------------------------------ */
+
+function esc(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+public5Routes.get("/share/:token", async (c) => {
+  const token = c.req.param("token") as string;
+  const resolved = await resolveShareToken(c.env, token);
+  if (!resolved) throw notFound("Share link not found");
+  const progress = await projectProgress(c.env, resolved.project);
+  const statusRows = progress.by_status
+    .map(
+      (s) =>
+        `<tr><td>${esc(s.status)}</td><td>${s.count}</td></tr>`,
+    )
+    .join("");
+  const milestoneRows = progress.milestones
+    .map((m) => `<li>${esc(m.date)} — ${esc(m.name)}</li>`)
+    .join("");
+  const width = Math.min(100, Math.max(0, progress.completion_rate));
+  const body = `
+<h1>${esc(progress.project_name)}</h1>
+<p class="muted">このページは読み取り専用の進捗共有です。</p>
+<h2>進捗</h2>
+<p>完了 ${progress.done} / 全 ${progress.total} タスク（${progress.completion_rate}%）</p>
+<div role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${width}" aria-label="完了率" style="background:#e3e3ee;border-radius:6px;height:14px;max-width:480px">
+<div style="background:#2456c8;height:14px;border-radius:6px;width:${width}%"></div>
+</div>
+<p class="muted">期間: ${progress.period.from ?? "—"} 〜 ${progress.period.to ?? "—"}</p>
+<h2>ステータス別</h2>
+<table><thead><tr><th>ステータス</th><th>件数</th></tr></thead><tbody>${statusRows}</tbody></table>
+${milestoneRows ? `<h2>マイルストーン</h2><ul>${milestoneRows}</ul>` : ""}
+`;
+  return c.html(shell(`進捗: ${progress.project_name}`, body, ""));
+});
+
+/* ------------------------------------------------------------------ */
+/* Public intake form                                                   */
+/* ------------------------------------------------------------------ */
+
+public5Routes.get("/intake/:token", async (c) => {
+  const token = c.req.param("token") as string;
+  const resolved = await resolveIntakeToken(c.env, token);
+  if (!resolved) throw notFound("Intake form not found");
+  const title = resolved.form.title ?? "タスク受付";
+  const body = `
+<h1>${esc(title)}</h1>
+<p class="muted">プロジェクト「${esc(resolved.project.name)}」へのタスク受付フォームです。タイトルだけを入力してください。</p>
+<form method="post" action="/intake/${esc(token)}">
+<p><label>タイトル（必須）<br><input type="text" name="title" required maxlength="500" style="width:100%"></label></p>
+<p style="display:none"><label>この欄は空のままにしてください<input type="text" name="website" tabindex="-1" autocomplete="off"></label></p>
+<p><button type="submit">送信する</button></p>
+</form>
+`;
+  return c.html(shell(title, body, ""));
+});
+
+public5Routes.post("/intake/:token", async (c) => {
+  const token = c.req.param("token") as string;
+  const resolved = await resolveIntakeToken(c.env, token);
+  if (!resolved) throw notFound("Intake form not found");
+  const formData = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>);
+  const honeypot = formData["website"];
+  if (typeof honeypot === "string" && honeypot !== "") {
+    // Bot trap: pretend success, create nothing.
+    return c.html(
+      shell("送信しました", "<h1>送信しました</h1><p>ありがとうございました。</p>", ""),
+    );
+  }
+  const titleRaw = formData["title"];
+  const title = typeof titleRaw === "string" ? titleRaw.trim() : "";
+  if (!title || title.length > 500) {
+    return c.html(
+      shell(
+        "入力エラー",
+        "<h1>入力エラー</h1><p>タイトルは1〜500文字で入力してください。</p>",
+        "",
+      ),
+      400,
+    );
+  }
+  const recent = await countRecentSubmissions(c.env, resolved.form.id);
+  if (recent >= INTAKE_RATE_LIMIT) {
+    return c.html(
+      shell(
+        "しばらくお待ちください",
+        "<h1>しばらくお待ちください</h1><p>短時間に多くの送信があったため、受付を一時的に制限しています。</p>",
+        "",
+      ),
+      429,
+    );
+  }
+  await assertWithinLimits(c.env, resolved.form.tenant_id, "task");
+  const task = await insertTask(
+    c.env,
+    resolved.project,
+    {
+      title,
+      descriptionEnc: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAccountId: null,
+      parentTaskId: null,
+      startDate: null,
+      dueDate: null,
+      sortOrder: 0,
+      estimateMinutes: null,
+    },
+    { accountId: resolved.form.created_by_account_id },
+  );
+  await recordSubmission(c.env, resolved.form, task.id);
+  return c.html(
+    shell(
+      "送信しました",
+      "<h1>送信しました</h1><p>タスクを受け付けました。ありがとうございました。</p>",
+      "",
+    ),
+  );
+});

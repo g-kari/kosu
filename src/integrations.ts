@@ -32,6 +32,7 @@ import {
 } from "./tasks";
 import { randomId, randomToken, sha256Hex, timingSafeEqual } from "./tokens";
 import { resolveStatuses } from "./workflow";
+import { runAutomationRules } from "./automation";
 import type {
   Env,
   ExternalItemRow,
@@ -1208,13 +1209,24 @@ export async function handleGithubWebhook(
       if (task.status === doneSlug) continue;
       const actor =
         link.created_by_account_id ?? connection.created_by_account_id;
-      await applyTaskPatch(
+      const completed = await applyTaskPatch(
         env,
         task,
         { status: doneSlug },
         { accountId: actor, admin: true },
       );
       outcome.tasksCompleted++;
+      // Phase 5: PR-merged automation rules fire for the task.
+      await runAutomationRules(env, {
+        tenantId: connection.tenant_id,
+        trigger: "pr_merged",
+        task: completed,
+        before: {
+          status: task.status,
+          assigneeAccountId: task.assignee_account_id,
+        },
+        actorAccountId: actor,
+      });
     }
     outcome.handled = true;
     outcome.detail = `PR merged; ${outcome.tasksCompleted} linked task(s) completed`;

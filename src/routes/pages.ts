@@ -9,6 +9,8 @@
  */
 import { Hono } from "hono";
 import { readSessionAccountId } from "../session";
+import { getUserPrefs, type UserPrefs } from "../prefs";
+import { t, type MessageKey } from "../i18n";
 import type { Env, Variables } from "../types";
 import type { Ctx } from "./http";
 
@@ -18,8 +20,24 @@ function jsonForScript(value: unknown): string {
   return JSON.stringify(value).replace(/</g, "\\u003c");
 }
 
+const darkRules = (root: string): string => `
+${root} { color-scheme: dark; }
+${root} body { background: #14141c; color: #e9e9f2; }
+${root} .card { border-color: #3a3a4f; }
+${root} td, ${root} th { border-bottom-color: #33334a; }
+${root} .muted { color: #a2a2ba; }
+${root} a { color: #8fb0ff; }
+${root} button.secondary { background: #26263a; color: #8fb0ff; }
+${root} input, ${root} select, ${root} textarea { background: #1d1d2a; color: #e9e9f2; border: 1px solid #3a3a4f; }
+${root} #palette { background: #1d1d2a; color: #e9e9f2; border-color: #3a3a4f; }
+`;
+
 const STYLE = `
 :root { color-scheme: light; }
+@media (prefers-color-scheme: dark) {
+${darkRules(':root:not([data-theme="light"])')}
+}
+${darkRules(':root[data-theme="dark"]')}
 body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 960px; padding: 0 1rem; color: #1a1a2e; }
 h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 2rem; }
 .cards { display: flex; gap: 1rem; flex-wrap: wrap; }
@@ -33,36 +51,197 @@ button.secondary { background: #eef; color: #2456c8; }
 .warn { color: #b3541e; font-weight: 600; }
 .err { color: #b00020; }
 a { color: #2456c8; }
+:focus-visible { outline: 3px solid #e07b00; outline-offset: 2px; }
+.skip { position: absolute; left: -9999px; top: 0; background: #2456c8; color: #fff; padding: .6rem 1rem; z-index: 50; }
+.skip:focus { left: 0; }
+#palette { border: 1px solid #ccd; border-radius: 10px; padding: 1rem; width: min(560px, 92vw); }
+#palette input { width: 100%; padding: .5rem; font-size: 1rem; box-sizing: border-box; }
+#palette ul { list-style: none; margin: .5rem 0 0; padding: 0; max-height: 320px; overflow: auto; }
+#palette li { padding: .45rem .5rem; border-radius: 6px; cursor: pointer; }
+#palette li[aria-selected="true"] { background: #2456c8; color: #fff; }
 `;
 
-function shell(title: string, body: string, script: string): string {
-  return `<!doctype html>
-<html lang="ja"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${title} — Kosu</title><style>${STYLE}</style></head>
-<body>${body}<script>${script}</script></body></html>`;
+export interface ShellOptions {
+  prefs?: UserPrefs | null;
+  /** Include the command palette + service worker (app pages). */
+  appChrome?: boolean;
 }
 
-async function loggedIn(c: Ctx): Promise<boolean> {
-  const accountId = await readSessionAccountId(
+export function shell(
+  title: string,
+  body: string,
+  script: string,
+  opts: ShellOptions = {},
+): string {
+  const prefs = opts.prefs ?? null;
+  const locale = prefs?.locale ?? "ja";
+  const themeAttr =
+    prefs && prefs.theme !== "system" ? ` data-theme="${prefs.theme}"` : "";
+  const palette = opts.appChrome
+    ? `<dialog id="palette" aria-label="コマンドパレット">
+<input id="paletteInput" type="text" role="combobox" aria-expanded="true" aria-controls="paletteList" aria-autocomplete="list" placeholder="${t(locale, "palette.placeholder")}">
+<ul id="paletteList" role="listbox"></ul>
+</dialog>`
+    : "";
+  const chrome = opts.appChrome ? PALETTE_SCRIPT : "";
+  const sw = opts.appChrome
+    ? `<script>if ("serviceWorker" in navigator) { navigator.serviceWorker.register("/sw.js").catch(() => {}); }</script>`
+    : "";
+  return `<!doctype html>
+<html lang="${locale}"${themeAttr}><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#2456c8">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<title>${title} — Kosu</title><style>${STYLE}</style></head>
+<body><a class="skip" href="#main">本文へ移動</a><main id="main">${body}</main>${palette}<script>${script}</script>${chrome}${sw}</body></html>`;
+}
+
+/** Command palette (phase 5 item 10): Cmd/Ctrl+K opens a dialog that
+ * searches tasks across the default tenant's projects, creates a task
+ * in the first project, and jumps between app pages. */
+const PALETTE_SCRIPT = `<script>
+(() => {
+  const dlg = document.getElementById("palette");
+  if (!dlg) return;
+  const input = document.getElementById("paletteInput");
+  const list = document.getElementById("paletteList");
+  let items = [];
+  let selected = 0;
+  let tenantId = null;
+  let firstProjectPath = null;
+  let createMode = false;
+  async function api(path, opts) {
+    const r = await fetch(path, opts);
+    if (!r.ok) throw new Error(r.status);
+    return r.json();
+  }
+  async function projectPaths() {
+    const paths = [];
+    const wss = (await api("/api/v1/tenants/" + tenantId + "/workspaces")).workspaces;
+    for (const w of wss) {
+      const teams = (await api("/api/v1/tenants/" + tenantId + "/workspaces/" + w.id + "/teams")).teams;
+      for (const tm of teams) {
+        const ps = (await api("/api/v1/tenants/" + tenantId + "/workspaces/" + w.id + "/teams/" + tm.id + "/projects")).projects;
+        for (const p of ps) paths.push({ id: p.id, name: p.name, path: "/api/v1/tenants/" + tenantId + "/workspaces/" + w.id + "/teams/" + tm.id + "/projects/" + p.id });
+      }
+    }
+    return paths;
+  }
+  function render() {
+    list.innerHTML = "";
+    items.forEach((item, i) => {
+      const li = document.createElement("li");
+      li.id = "palette-item-" + i;
+      li.setAttribute("role", "option");
+      li.setAttribute("aria-selected", i === selected ? "true" : "false");
+      li.textContent = item.label;
+      li.onclick = () => choose(item);
+      list.appendChild(li);
+    });
+    input.setAttribute("aria-activedescendant", items.length ? "palette-item-" + selected : "");
+  }
+  async function refresh() {
+    const q = input.value.trim().toLowerCase();
+    items = [];
+    if (createMode) {
+      items.push({ label: "作成: " + input.value, run: async () => {
+        if (!firstProjectPath) return;
+        await api(firstProjectPath + "/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: input.value.trim() }) });
+        location.href = "/app";
+      }});
+      render();
+      return;
+    }
+    items.push({ label: "タスクを作成", run: () => { createMode = true; input.value = ""; input.placeholder = "タスク名を入力して Enter"; refresh(); } });
+    items.push({ label: "ダッシュボードへ移動", run: () => { location.href = "/app"; } });
+    items.push({ label: "表示設定へ移動", run: () => { location.href = "/app/preferences"; } });
+    items.push({ label: "初期設定へ移動", run: () => { location.href = "/app/onboarding"; } });
+    if (q) {
+      try {
+        const paths = await projectPaths();
+        for (const p of paths) {
+          const data = await api(p.path + "/tasks?limit=100");
+          for (const task of data.tasks) {
+            if (task.title.toLowerCase().includes(q)) {
+              items.push({ label: task.title + "（" + p.name + "）", run: () => { location.href = "/app/projects/" + p.id + "/gantt"; } });
+            }
+          }
+        }
+      } catch (e) { /* palette search is best-effort */ }
+      items = items.filter((it, i) => i < 3 || it.label.toLowerCase().includes(q));
+    }
+    selected = 0;
+    render();
+  }
+  async function choose(item) {
+    if (!item) return;
+    dlg.close();
+    await item.run();
+  }
+  input.addEventListener("input", () => { selected = 0; refresh(); });
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "ArrowDown") { ev.preventDefault(); selected = Math.min(selected + 1, items.length - 1); render(); }
+    if (ev.key === "ArrowUp") { ev.preventDefault(); selected = Math.max(selected - 1, 0); render(); }
+    if (ev.key === "Enter") { ev.preventDefault(); choose(items[selected]); }
+  });
+  document.addEventListener("keydown", async (ev) => {
+    if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "k") {
+      ev.preventDefault();
+      if (!tenantId) {
+        try {
+          const me = await api("/api/v1/me");
+          tenantId = me.account.default_tenant_id || (me.tenants[0] && me.tenants[0].id);
+          const paths = await projectPaths();
+          firstProjectPath = paths.length ? paths[0].path : null;
+        } catch (e) { return; }
+      }
+      createMode = false;
+      input.value = "";
+      dlg.showModal();
+      refresh();
+      input.focus();
+    }
+  });
+})();
+</script>`;
+
+export async function sessionAccountId(c: Ctx): Promise<string | null> {
+  return readSessionAccountId(
     c.env,
     c.req.header("cookie") ?? null,
     c.req.url,
   );
-  return accountId !== null;
+}
+
+async function loggedIn(c: Ctx): Promise<boolean> {
+  return (await sessionAccountId(c)) !== null;
+}
+
+export async function prefsFor(c: Ctx): Promise<UserPrefs | null> {
+  const accountId = await sessionAccountId(c);
+  if (!accountId) return null;
+  return getUserPrefs(c.env, accountId);
 }
 
 pageRoutes.get("/app", async (c) => {
-  if (!(await loggedIn(c))) return c.redirect("/auth/login", 302);
+  const prefs = await prefsFor(c);
+  if (!prefs) return c.redirect("/auth/login", 302);
+  const locale = prefs.locale;
+  const weekDayKey = `weekday.${prefs.week_start}` as MessageKey;
+  const weekLabel =
+    locale === "en"
+      ? "This week's time"
+      : `今週の工数（${t(locale, weekDayKey)}始まり）`;
   const body = `
-<h1>Kosu ダッシュボード</h1>
+<h1>Kosu ${t(locale, "dashboard.title")}</h1>
 <p class="muted" id="who"></p>
 <div class="cards">
-  <div class="card"><div class="muted">今日の工数</div><div class="big" id="today">–</div><div class="muted" id="todayRaw"></div></div>
-  <div class="card"><div class="muted">今週の工数（月曜始まり）</div><div class="big" id="week">–</div><div class="muted" id="weekRaw"></div></div>
+  <div class="card"><div class="muted">${locale === "en" ? "Today's time" : "今日の工数"}</div><div class="big" id="today">–</div><div class="muted" id="todayRaw"></div></div>
+  <div class="card"><div class="muted">${weekLabel}</div><div class="big" id="week">–</div><div class="muted" id="weekRaw"></div></div>
   <div class="card"><div class="muted">同期ステータス</div><div class="big" id="syncSeq">–</div><div class="muted" id="syncInfo"></div></div>
 </div>
-<p><a href="/app/settings/integrations">外部連携・MCP の設定</a></p>
+<p><a href="/app/settings/integrations">外部連携・MCP の設定</a> ／ <a href="/app/preferences">${t(locale, "nav.preferences")}</a> ／ <a href="/app/onboarding">${t(locale, "nav.onboarding")}</a> ／ <a href="/terms">${t(locale, "nav.terms")}</a></p>
 <h2>実行中のタイマー</h2>
 <div id="running"><p class="muted">なし</p></div>
 <h2>進行中のタスク</h2>
@@ -134,7 +313,9 @@ async function api(path, opts) {
   }
 })();
 `;
-  return c.html(shell("ダッシュボード", body, script));
+  return c.html(
+    shell("ダッシュボード", body, script, { prefs, appChrome: true }),
+  );
 });
 
 pageRoutes.get("/app/projects/:projectId/gantt", async (c) => {
@@ -211,7 +392,12 @@ const fmtDay = (t) => { const d = new Date(t); return (d.getUTCMonth()+1) + "/" 
   }
 })();
 `;
-  return c.html(shell("ガント", body, script));
+  return c.html(
+    shell("ガント", body, script, {
+      prefs: await prefsFor(c),
+      appChrome: true,
+    }),
+  );
 });
 
 pageRoutes.get("/app/conflicts", async (c) => {
@@ -298,7 +484,12 @@ async function load() {
 }
 (async () => { try { await load(); } catch (err) { $("msg").textContent = "読み込みに失敗しました: " + err.message; } })();
 `;
-  return c.html(shell("同期の競合", body, script));
+  return c.html(
+    shell("同期の競合", body, script, {
+      prefs: await prefsFor(c),
+      appChrome: true,
+    }),
+  );
 });
 
 pageRoutes.get("/app/settings/integrations", async (c) => {
@@ -541,7 +732,118 @@ $("mailCreate").onclick = async () => {
   }
 })();
 `;
-  return c.html(shell("外部連携・MCP 設定", body, script));
+  return c.html(
+    shell("外部連携・MCP 設定", body, script, {
+      prefs: await prefsFor(c),
+      appChrome: true,
+    }),
+  );
+});
+
+pageRoutes.get("/app/preferences", async (c) => {
+  const prefs = await prefsFor(c);
+  if (!prefs) return c.redirect("/auth/login", 302);
+  const locale = prefs.locale;
+  const weekdayOptions = [1, 2, 3, 4, 5, 6, 7]
+    .map(
+      (d) =>
+        `<option value="${d}"${prefs.week_start === d ? " selected" : ""}>${t(locale, `weekday.${d}` as MessageKey)}</option>`,
+    )
+    .join("");
+  const body = `
+<h1>${t(locale, "prefs.title")}</h1>
+<p class="muted"><a href="/app">← ${t(locale, "nav.dashboard")}</a></p>
+<form id="prefsForm">
+<p>${t(locale, "prefs.theme")}
+<select id="fTheme">
+<option value="system"${prefs.theme === "system" ? " selected" : ""}>${t(locale, "prefs.theme_system")}</option>
+<option value="light"${prefs.theme === "light" ? " selected" : ""}>${t(locale, "prefs.theme_light")}</option>
+<option value="dark"${prefs.theme === "dark" ? " selected" : ""}>${t(locale, "prefs.theme_dark")}</option>
+</select></p>
+<p>${t(locale, "prefs.locale")}
+<select id="fLocale">
+<option value="ja"${locale === "ja" ? " selected" : ""}>日本語</option>
+<option value="en"${locale === "en" ? " selected" : ""}>English</option>
+</select></p>
+<p>${t(locale, "prefs.week_start")}
+<select id="fWeekStart">${weekdayOptions}</select></p>
+<p><button type="submit">${t(locale, "prefs.save")}</button> <span id="saved" class="muted"></span></p>
+</form>
+<p id="msg" class="err"></p>`;
+  const script = `
+const $ = (id) => document.getElementById(id);
+$("prefsForm").onsubmit = async (ev) => {
+  ev.preventDefault();
+  try {
+    const r = await fetch("/api/v1/me/prefs", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        theme: $("fTheme").value,
+        locale: $("fLocale").value,
+        week_start: Number($("fWeekStart").value),
+      }),
+    });
+    if (!r.ok) throw new Error(r.status);
+    $("saved").textContent = ${jsonForScript(t(locale, "prefs.saved"))};
+    setTimeout(() => location.reload(), 400);
+  } catch (e) { $("msg").textContent = e.message; }
+};
+`;
+  return c.html(
+    shell(t(locale, "prefs.title"), body, script, { prefs, appChrome: true }),
+  );
+});
+
+pageRoutes.get("/app/onboarding", async (c) => {
+  const prefs = await prefsFor(c);
+  if (!prefs) return c.redirect("/auth/login", 302);
+  const locale = prefs.locale;
+  const body = `
+<h1>${t(locale, "onboarding.title")}</h1>
+<p class="muted"><a href="/app">← ${t(locale, "nav.dashboard")}</a></p>
+<ol>
+<li>プロジェクトを作る（または下のサンプルで試す）</li>
+<li>タスクを作成し、タイマーで時間を記録する</li>
+<li>Cmd+K（Ctrl+K）のコマンドパレットで検索・作成する</li>
+<li>連携設定から MCP や外部サービスをつなぐ</li>
+</ol>
+<h2>サンプルデータ</h2>
+<p class="muted">サンプルプロジェクト（タスク3件つき）を自分のテナントに追加できます。不要になったら削除できます。</p>
+<p id="sampleState" class="muted">確認中…</p>
+<p><button id="addSample">${t(locale, "onboarding.add_sample")}</button>
+<button id="removeSample" class="secondary">${t(locale, "onboarding.remove_sample")}</button></p>
+<p id="msg" class="err"></p>`;
+  const script = `
+const $ = (id) => document.getElementById(id);
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error((j.error && j.error.message) || ("HTTP " + r.status)); }
+  return r.json();
+}
+let tenantId = null;
+async function refresh() {
+  const s = await api("/api/v1/tenants/" + tenantId + "/onboarding/sample");
+  $("sampleState").textContent = s.sample_project_id ? "サンプルプロジェクト: 投入済み" : "サンプルプロジェクト: 未投入";
+  $("addSample").disabled = !!s.sample_project_id;
+  $("removeSample").disabled = !s.sample_project_id;
+}
+(async () => {
+  try {
+    const me = await api("/api/v1/me");
+    tenantId = me.account.default_tenant_id || (me.tenants[0] && me.tenants[0].id);
+    await refresh();
+    $("addSample").onclick = async () => { try { await api("/api/v1/tenants/" + tenantId + "/onboarding/sample", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); await refresh(); } catch (e) { $("msg").textContent = e.message; } };
+    $("removeSample").onclick = async () => { try { await api("/api/v1/tenants/" + tenantId + "/onboarding/sample", { method: "DELETE" }); await refresh(); } catch (e) { $("msg").textContent = e.message; } };
+  } catch (e) { $("msg").textContent = e.message; }
+})();
+`;
+  return c.html(
+    shell(t(locale, "onboarding.title"), body, script, {
+      prefs,
+      appChrome: true,
+    }),
+  );
 });
 
 pageRoutes.get("/invite/:token", async (c) => {

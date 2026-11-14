@@ -4,6 +4,7 @@ import sql0002 from "../migrations/0002_hierarchy.sql?raw";
 import sql0003 from "../migrations/0003_phase2.sql?raw";
 import sql0004 from "../migrations/0004_phase3.sql?raw";
 import sql0005 from "../migrations/0005_phase4.sql?raw";
+import sql0006 from "../migrations/0006_phase5.sql?raw";
 
 // Applies the real migration files to an in-memory SQLite (Node's built-in
 // node:sqlite) to prove 0001 + 0002 compose into the phase-1 schema.
@@ -202,6 +203,54 @@ describe("migrations", () => {
     for (const col of ["tenant_id", "created_by_account_id"]) {
       expect(columns("links").has(col), `links.${col}`).toBe(true);
     }
+    const violations = db.prepare("PRAGMA foreign_key_check").all();
+    expect(violations).toHaveLength(0);
+    db.close();
+  });
+
+  it("0006 adds the phase-5 extension schema", async () => {
+    const db = await openSqlite();
+    if (!db) return;
+    db.exec(sql0001);
+    db.exec(sql0002);
+    db.exec(sql0003);
+    db.exec(sql0004);
+    db.exec(sql0005);
+    db.exec(sql0006);
+    const rows = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all() as { name: string }[];
+    const tables = new Set(rows.map((r) => r.name));
+    for (const expected of [
+      "automation_rules",
+      "automation_runs",
+      "project_templates",
+      "report_definitions",
+      "report_runs",
+      "escalation_settings",
+      "tenant_limits",
+      "user_prefs",
+      "login_events",
+      "public_share_links",
+      "intake_forms",
+      "intake_submissions",
+      "sample_projects",
+    ]) {
+      expect(tables.has(expected), `missing table ${expected}`).toBe(true);
+    }
+    const columns = (table: string) =>
+      new Set(
+        (
+          db.prepare(`PRAGMA table_info(${table})`).all() as {
+            name: string;
+          }[]
+        ).map((r) => r.name),
+      );
+    for (const col of ["estimate_points", "estimate_size"]) {
+      expect(columns("tasks").has(col), `tasks.${col}`).toBe(true);
+    }
+    expect(columns("recurrence_rules").has("basis")).toBe(true);
+    expect(columns("api_keys").has("ip_allowlist")).toBe(true);
     const violations = db.prepare("PRAGMA foreign_key_check").all();
     expect(violations).toHaveLength(0);
     db.close();

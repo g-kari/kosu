@@ -46,6 +46,7 @@ import {
   loadEntry,
   loadMilestoneAny,
   loadTask,
+  loadTaskAny,
   parseEntryInput,
   parseMilestoneInput,
   parseTaskInput,
@@ -67,9 +68,13 @@ import {
   taskIdsWithLabel,
   type TaskFilterQuery,
 } from "../labels";
+import { runAutomationRules } from "../automation";
 import { dispatchNotifications } from "../notify";
+import { getUserPrefs } from "../prefs";
+import { assertWithinLimits } from "../usage";
 import { recordView } from "../planning";
 import { resolvePriorities, resolveStatuses } from "../workflow";
+import { base64UrlToUtf8, utf8ToBase64Url } from "../tokens";
 import { isDateString } from "../timecalc";
 import type { Env, Principal, ProjectRow, Variables } from "../types";
 import { auth, queryInt, readJsonBody, type Ctx } from "./http";
@@ -177,7 +182,10 @@ taskRoutes.post(TASK_PATH, async (c) => {
     dueDate: parsed.dueDate ?? null,
     sortOrder: parsed.sortOrder ?? 0,
     estimateMinutes: parsed.estimateMinutes ?? null,
+    estimatePoints: parsed.estimatePoints ?? null,
+    estimateSize: parsed.estimateSize ?? null,
   };
+  await assertWithinLimits(c.env, a.tenantId, "task");
   const row = await insertTask(c.env, project, input, {
     accountId: principal.accountId,
   });
@@ -202,7 +210,23 @@ taskRoutes.post(TASK_PATH, async (c) => {
       relatedId: row.id,
     });
   }
-  return c.json({ task: publicTask(row) }, 201);
+  await runAutomationRules(c.env, {
+    tenantId: a.tenantId,
+    trigger: "task_created",
+    task: row,
+    actorAccountId: principal.accountId,
+  });
+  if (row.assignee_account_id) {
+    await runAutomationRules(c.env, {
+      tenantId: a.tenantId,
+      trigger: "task_assigned",
+      task: row,
+      actorAccountId: principal.accountId,
+    });
+  }
+  // Rules may have changed the task; answer with the current state.
+  const fresh = (await loadTaskAny(c.env, row.id)) ?? row;
+  return c.json({ task: publicTask(fresh) }, 201);
 });
 
 taskRoutes.get(TASK_PATH, async (c) => {
@@ -239,7 +263,57 @@ taskRoutes.get(TASK_PATH, async (c) => {
     }
   }
   const tasks = applyTaskFilter(all, filter, labelMap);
-  return c.json({ tasks: tasks.map(publicTask) });
+  // Phase 5: optional keyset pagination. Without `limit` the full list
+  // is returned (phase 1-4 behaviour). With `limit`, the response adds
+  // `next_cursor`; pass it back as `cursor` for the following page.
+  // The cursor pins the (sort_order, created_at, id) of the last row.
+  const limitRaw = c.req.query("limit");
+  if (limitRaw === undefined) {
+    return c.json({ tasks: tasks.map(publicTask) });
+  }
+  const limit = queryInt(c, "limit", 50, 1, 200);
+  let start = 0;
+  const cursorRaw = c.req.query("cursor");
+  if (cursorRaw) {
+    let cursor: { s: number; c: string; i: string } | null = null;
+    try {
+      const parsed: unknown = JSON.parse(base64UrlToUtf8(cursorRaw));
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        typeof (parsed as { s?: unknown }).s === "number" &&
+        typeof (parsed as { c?: unknown }).c === "string" &&
+        typeof (parsed as { i?: unknown }).i === "string"
+      ) {
+        cursor = parsed as { s: number; c: string; i: string };
+      }
+    } catch {
+      cursor = null;
+    }
+    if (!cursor) throw badRequest('"cursor" is not a valid pagination cursor');
+    const idx = tasks.findIndex(
+      (t) =>
+        Number(t.sort_order) > (cursor as { s: number }).s ||
+        (Number(t.sort_order) === (cursor as { s: number }).s &&
+          (t.created_at > (cursor as { c: string }).c ||
+            (t.created_at === (cursor as { c: string }).c &&
+              t.id > (cursor as { i: string }).i))),
+    );
+    start = idx === -1 ? tasks.length : idx;
+  }
+  const page = tasks.slice(start, start + limit);
+  const last = page[page.length - 1];
+  const nextCursor =
+    start + limit < tasks.length && last
+      ? utf8ToBase64Url(
+          JSON.stringify({
+            s: Number(last.sort_order),
+            c: last.created_at,
+            i: last.id,
+          }),
+        )
+      : null;
+  return c.json({ tasks: page.map(publicTask), next_cursor: nextCursor });
 });
 
 taskRoutes.get(`${TASK_PATH}/:taskId`, async (c) => {
@@ -302,7 +376,33 @@ taskRoutes.patch(`${TASK_PATH}/:taskId`, async (c) => {
       relatedId: row.id,
     });
   }
-  return c.json({ task: publicTask(row) });
+  if (row.status !== current.status) {
+    await runAutomationRules(c.env, {
+      tenantId: a.tenantId,
+      trigger: "task_status_changed",
+      task: row,
+      before: {
+        status: current.status,
+        assigneeAccountId: current.assignee_account_id,
+      },
+      actorAccountId: principal.accountId,
+    });
+  }
+  if (row.assignee_account_id !== current.assignee_account_id) {
+    await runAutomationRules(c.env, {
+      tenantId: a.tenantId,
+      trigger: "task_assigned",
+      task: row,
+      before: {
+        status: current.status,
+        assigneeAccountId: current.assignee_account_id,
+      },
+      actorAccountId: principal.accountId,
+    });
+  }
+  // Rules may have changed the task; answer with the current state.
+  const fresh = (await loadTaskAny(c.env, row.id)) ?? row;
+  return c.json({ task: publicTask(fresh) });
 });
 
 taskRoutes.delete(`${TASK_PATH}/:taskId`, async (c) => {
@@ -713,5 +813,24 @@ taskRoutes.get(`${TENANT_PATH}/dashboard`, async (c) => {
     throw badRequest('"date" query (YYYY-MM-DD, local) is required');
   }
   const tz = queryInt(c, "tz", 0, -840, 840);
-  return c.json(await dashboard(c.env, principal, tenantId, date, tz));
+  // Week start: explicit query wins, then the caller's saved display
+  // preference (phase 5), then Monday.
+  let weekStartDow = 1;
+  if (c.req.query("week_start") !== undefined) {
+    weekStartDow = queryInt(c, "week_start", 1, 1, 7);
+  } else {
+    const prefs = await getUserPrefs(c.env, principal.accountId);
+    weekStartDow = prefs.week_start;
+  }
+  return c.json(
+    await dashboard(
+      c.env,
+      principal,
+      tenantId,
+      date,
+      tz,
+      undefined,
+      weekStartDow,
+    ),
+  );
 });

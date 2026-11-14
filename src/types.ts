@@ -11,6 +11,11 @@ export interface Env {
   FIELD_ENCRYPTION_KEY?: string;
   /** HMAC key for signed session / flow cookies (Worker secret). */
   SESSION_SECRET: string;
+  /**
+   * Comma-separated internal account ids of the service operators
+   * (phase 5 admin console). Unset means the console is disabled.
+   */
+  OPERATOR_ACCOUNT_IDS?: string;
 }
 
 /** Who is calling: a browser session or an API key (the MCP front door). */
@@ -100,6 +105,8 @@ export interface TaskRow {
   due_date: string | null;
   sort_order: number;
   estimate_minutes: number | null;
+  estimate_points: number | null;
+  estimate_size: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -275,6 +282,7 @@ export interface RecurrenceRuleRow {
   tenant_id: string;
   task_id: string;
   freq: string;
+  basis: string;
   interval_count: number;
   by_weekday_json: string | null;
   end_date: string | null;
@@ -479,6 +487,128 @@ export interface MailInboundTokenRow {
   project_id: string;
   token_hash: string;
   label: string | null;
+  created_by_account_id: string;
+  created_at: string;
+  revoked_at: string | null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 5 row shapes                                                   */
+/* ------------------------------------------------------------------ */
+
+export interface AutomationRuleRow {
+  id: string;
+  tenant_id: string;
+  project_id: string | null;
+  name: string;
+  trigger_kind: string;
+  condition_json: string;
+  actions_json: string;
+  enabled: number;
+  created_by_account_id: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface AutomationRunRow {
+  id: string;
+  tenant_id: string;
+  rule_id: string;
+  trigger_kind: string;
+  target_type: string | null;
+  target_id: string | null;
+  result: string;
+  detail: string | null;
+  created_at: string;
+}
+
+export interface ProjectTemplateRow {
+  id: string;
+  tenant_id: string;
+  name: string;
+  payload_json: string;
+  created_by_account_id: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface ReportDefinitionRow {
+  id: string;
+  tenant_id: string;
+  name: string;
+  definition_json: string;
+  schedule: string;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  created_by_account_id: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface ReportRunRow {
+  id: string;
+  tenant_id: string;
+  definition_id: string;
+  report_json: string;
+  created_at: string;
+}
+
+export interface EscalationSettingsRow {
+  tenant_id: string;
+  enabled: number;
+  before_days: number;
+  overdue_admin_days: number;
+  repeat_days: number;
+  updated_at: string;
+}
+
+export interface TenantLimitsRow {
+  tenant_id: string;
+  max_members: number | null;
+  max_tasks: number | null;
+  max_attachment_bytes: number | null;
+  updated_at: string;
+}
+
+export interface UserPrefsRow {
+  account_id: string;
+  theme: string;
+  locale: string;
+  week_start: number;
+  updated_at: string;
+}
+
+export interface LoginEventRow {
+  id: string;
+  account_id: string;
+  ip: string;
+  user_agent: string;
+  created_at: string;
+}
+
+export interface PublicShareLinkRow {
+  id: string;
+  tenant_id: string;
+  project_id: string;
+  token_hash: string;
+  label: string | null;
+  expires_at: string | null;
+  created_by_account_id: string;
+  created_at: string;
+  last_accessed_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface IntakeFormRow {
+  id: string;
+  tenant_id: string;
+  project_id: string;
+  token_hash: string;
+  title: string | null;
+  enabled: number;
   created_by_account_id: string;
   created_at: string;
   revoked_at: string | null;

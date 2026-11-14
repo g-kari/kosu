@@ -22,9 +22,11 @@ import type { Context } from "hono";
 import {
   issueApiKey,
   listApiKeys,
+  normalizeIpAllowlist,
   normalizeScopes,
   publicKey,
   revokeApiKey,
+  updateApiKeyIpAllowlist,
 } from "../apikeys";
 import { recordAudit } from "../audit";
 import { assertKeyTenant, requirePrincipal } from "../auth";
@@ -533,15 +535,36 @@ apiRoutes.post(KEYS_PATH, async (c) => {
   await guard(c.env, principal, { tenantId }, "write");
   const name = cleanName(body["name"]);
   const scopes = normalizeScopes(body["scopes"] ?? ["read", "write"]);
+  const ipAllowlist = normalizeIpAllowlist(body["ip_allowlist"]);
   const issued = await issueApiKey(
     c.env,
     tenantId,
     principal.accountId,
     name,
     scopes,
+    ipAllowlist,
   );
   // The plaintext key is returned exactly once, at issuance.
   return c.json({ api_key: issued.apiKey, key: issued.key }, 201);
+});
+
+apiRoutes.patch(`${KEYS_PATH}/:keyId`, async (c) => {
+  const tenantId = c.req.param("tenantId");
+  const keyId = c.req.param("keyId");
+  const principal = await auth(c, tenantId);
+  const body = await readJsonBody(c);
+  await loadTenant(c.env, tenantId);
+  const { chain } = await guard(c.env, principal, { tenantId }, "write");
+  const tenantAdmin = chain.tenant === "owner" || chain.tenant === "admin";
+  const key = await updateApiKeyIpAllowlist(
+    c.env,
+    tenantId,
+    keyId,
+    principal.accountId,
+    tenantAdmin,
+    normalizeIpAllowlist(body["ip_allowlist"]),
+  );
+  return c.json({ key });
 });
 
 apiRoutes.get(KEYS_PATH, async (c) => {

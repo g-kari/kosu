@@ -98,6 +98,7 @@ import {
   type LabelScope,
 } from "../labels";
 import { dispatchNotifications } from "../notify";
+import { assertWithinLimits } from "../usage";
 import {
   deleteRecurrenceRule,
   deleteTemplate,
@@ -945,6 +946,7 @@ workRoutes.post(`${TASK_PATH}/:taskId/attachments`, async (c) => {
   if (buffer.byteLength > MAX_ATTACHMENT_BYTES) {
     throw badRequest("Attachment is too large");
   }
+  await assertWithinLimits(c.env, a.tenantId, "attachment", buffer.byteLength);
   const row = await createAttachment(c.env, {
     tenantId: a.tenantId,
     taskId: task.id,

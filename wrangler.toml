@@ -10,8 +10,9 @@ routes = [
   { pattern = "kosu.0g0.xyz", custom_domain = true },
 ]
 
-# Hourly: deadline reminders (overdue / due today / due tomorrow) are
-# dispatched from the Worker's scheduled handler.
+# Hourly: deadline reminders (overdue / due today / due tomorrow),
+# deadline escalations and due scheduled reports are dispatched from
+# the Worker's scheduled handler.
 [triggers]
 crons = ["0 * * * *"]
 
@@ -26,6 +27,9 @@ OIDC_ISSUER = "https://id.0g0.xyz"
 # Registered via DCR (RFC 7591) on 2026-11-14; public client, PKCE S256, no secret.
 OIDC_CLIENT_ID = "1c52afa2e94016e8d2953f7c3467f3b2"
 OIDC_SCOPES = "openid profile email"
+# Phase 5 operator console: comma-separated internal account ids of
+# the service operators (never an OIDC sub). Leave unset to disable.
+# OPERATOR_ACCOUNT_IDS = ""
 
 [[d1_databases]]
 binding = "DB"

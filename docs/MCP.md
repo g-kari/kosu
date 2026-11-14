@@ -50,7 +50,7 @@ Codex / dsh 等）から操作するためのエンドポイントです。
 
 | ツール | 引数 | 内容 |
 |---|---|---|
-| `kosu_create_task` | `tenant_id`, `project_id`, `title`, `description_enc?`, `status?`, `priority?`, `assignee_account_id?`, `parent_task_id?`, `start_date?`, `due_date?`, `sort_order?`, `estimate_minutes?` | タスク作成（ステータスはワークフロー定義で検証） |
+| `kosu_create_task` | `tenant_id`, `project_id`, `title`, `description_enc?`, `status?`, `priority?`, `assignee_account_id?`, `parent_task_id?`, `start_date?`, `due_date?`, `sort_order?`, `estimate_minutes?`, `estimate_points?`, `estimate_size?` | タスク作成（ステータスはワークフロー定義で検証）。フェーズ5で見積もりのストーリーポイント（数値）と Tシャツサイズ（XS/S/M/L/XL）を追加 |
 | `kosu_update_task` | `tenant_id`, `project_id`, `task_id`, ＋作成と同じ任意項目 | タスクの部分更新 |
 | `kosu_create_time_entry` | `tenant_id`, `started_at`, `task_id?` または `workspace_id`, `ended_at?`, `duration_seconds?`, `note_enc?` | 工数の手入力記録 |
 | `kosu_start_timer` | `tenant_id`, `workspace_id`, `task_id?` | タイマー開始（1アカウント1件まで） |

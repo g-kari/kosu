@@ -18,6 +18,8 @@ import {
   loadWorkspace,
 } from "./hierarchy";
 import { randomId, randomToken, sha256Hex } from "./tokens";
+import { tenantMemberIds } from "./members";
+import { assertWithinLimits } from "./usage";
 import type { Env, InviteRow, Principal } from "./types";
 
 export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -298,6 +300,14 @@ export async function acceptInvite(
   )
     .bind(targetId, principal.accountId)
     .first<{ account_id: string }>();
+  if (!existing) {
+    // Phase 5 tenant member limit: only a genuinely new member of the
+    // tenant counts against it.
+    const memberIds = await tenantMemberIds(env, row.tenant_id);
+    if (!memberIds.includes(principal.accountId)) {
+      await assertWithinLimits(env, row.tenant_id, "member");
+    }
+  }
   const now = nowIso();
   const statements = [];
   if (!existing) {

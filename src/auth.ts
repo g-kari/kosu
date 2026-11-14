@@ -15,6 +15,7 @@ import {
 } from "./apikeys";
 import { forbidden, notFound, unauthorized } from "./errors";
 import { readSessionAccountId } from "./session";
+import { ipAllowed, requestIp } from "./security";
 import type { Env, Principal } from "./types";
 
 export interface CtxLike {
@@ -39,6 +40,18 @@ export async function resolvePrincipal(c: CtxLike): Promise<Principal | null> {
     const found = await findActiveApiKey(c.env, token);
     if (!found) {
       throw unauthorized("INVALID_API_KEY", "API key is not valid");
+    }
+    // Phase 5: per-key IP allowlist. The request IP comes from the
+    // platform headers (cf-connecting-ip, falling back to
+    // x-forwarded-for); a mismatch is a hard 403.
+    const headers = new Headers();
+    for (const name of ["cf-connecting-ip", "x-forwarded-for"]) {
+      const value = c.req.header(name);
+      if (value) headers.set(name, value);
+    }
+    const ip = requestIp(headers);
+    if (!ipAllowed(found.key.ip_allowlist, ip)) {
+      throw forbidden("API key is not allowed from this IP address");
     }
     await touchApiKey(c.env, found.key.id);
     return {

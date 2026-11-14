@@ -18,7 +18,7 @@ import { cleanName } from "./hierarchy";
 import { recordTaskHistory } from "./history";
 import { assertEntryEditable } from "./locks";
 import { recordChange } from "./sync-core";
-import { addDays, isDateString, roundSeconds, secondsBetween, weekStart, localDayRangeUtc } from "./timecalc";
+import { addDays, isDateString, roundSeconds, secondsBetween, weekStartOn, localDayRangeUtc } from "./timecalc";
 import { resolveRounding } from "./settings";
 import { resolveStatuses, statusCategory } from "./workflow";
 import { randomId } from "./tokens";
@@ -56,6 +56,11 @@ export function publicTask(row: TaskRow) {
     sort_order: Number(row.sort_order),
     estimate_minutes:
       row.estimate_minutes === null ? null : Number(row.estimate_minutes),
+    estimate_points:
+      row.estimate_points === null || row.estimate_points === undefined
+        ? null
+        : Number(row.estimate_points),
+    estimate_size: row.estimate_size ?? null,
     version: Number(row.version),
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -184,6 +189,8 @@ function optionalInt(
   return input;
 }
 
+export const ESTIMATE_SIZES = ["XS", "S", "M", "L", "XL"] as const;
+
 export interface TaskInput {
   title: string;
   descriptionEnc: string | null;
@@ -195,6 +202,9 @@ export interface TaskInput {
   dueDate: string | null;
   sortOrder: number;
   estimateMinutes: number | null;
+  /** Phase 5 estimate units; optional so internal callers may omit. */
+  estimatePoints?: number | null;
+  estimateSize?: string | null;
 }
 
 export function parseTaskInput(
@@ -251,6 +261,34 @@ export function parseTaskInput(
       0,
       525_600,
     );
+  }
+  if (body["estimate_points"] !== undefined) {
+    const raw = body["estimate_points"];
+    if (raw === null) {
+      out.estimatePoints = null;
+    } else if (
+      typeof raw !== "number" ||
+      !Number.isFinite(raw) ||
+      raw < 0 ||
+      raw > 100_000
+    ) {
+      throw badRequest('"estimate_points" must be a number 0-100000');
+    } else {
+      out.estimatePoints = raw;
+    }
+  }
+  if (body["estimate_size"] !== undefined) {
+    const raw = body["estimate_size"];
+    if (raw === null) {
+      out.estimateSize = null;
+    } else if (
+      typeof raw !== "string" ||
+      !(ESTIMATE_SIZES as readonly string[]).includes(raw)
+    ) {
+      throw badRequest('"estimate_size" must be one of XS, S, M, L, XL');
+    } else {
+      out.estimateSize = raw;
+    }
   }
   return out;
 }
@@ -411,6 +449,8 @@ export async function insertTask(
     due_date: input.dueDate,
     sort_order: input.sortOrder,
     estimate_minutes: input.estimateMinutes,
+    estimate_points: input.estimatePoints ?? null,
+    estimate_size: input.estimateSize ?? null,
     version: 1,
     created_at: now,
     updated_at: now,
@@ -418,13 +458,14 @@ export async function insertTask(
     archived_at: null,
   };
   await env.DB.prepare(
-    "INSERT INTO tasks (id, tenant_id, workspace_id, team_id, project_id, parent_task_id, title, description_enc, status, priority, assignee_account_id, start_date, due_date, sort_order, estimate_minutes, version, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+    "INSERT INTO tasks (id, tenant_id, workspace_id, team_id, project_id, parent_task_id, title, description_enc, status, priority, assignee_account_id, start_date, due_date, sort_order, estimate_minutes, estimate_points, estimate_size, version, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
   )
     .bind(
       row.id, row.tenant_id, row.workspace_id, row.team_id, row.project_id,
       row.parent_task_id, row.title, row.description_enc, row.status,
       row.priority, row.assignee_account_id, row.start_date, row.due_date,
-      row.sort_order, row.estimate_minutes, row.version, now, now,
+      row.sort_order, row.estimate_minutes, row.estimate_points,
+      row.estimate_size, row.version, now, now,
     )
     .run();
   await recordChange(env, {
@@ -464,6 +505,8 @@ function taskChanges(
     "due_date",
     "sort_order",
     "estimate_minutes",
+    "estimate_points",
+    "estimate_size",
   ] as const;
   for (const f of fields) {
     if (before[f] !== after[f]) {
@@ -514,6 +557,14 @@ export async function applyTaskPatch(
       patch.estimateMinutes !== undefined
         ? patch.estimateMinutes
         : current.estimate_minutes,
+    estimate_points:
+      patch.estimatePoints !== undefined
+        ? patch.estimatePoints
+        : (current.estimate_points ?? null),
+    estimate_size:
+      patch.estimateSize !== undefined
+        ? patch.estimateSize
+        : (current.estimate_size ?? null),
     version: Number(current.version) + 1,
     updated_at: nowIso(),
     deleted_at: current.deleted_at,
@@ -524,12 +575,13 @@ export async function applyTaskPatch(
     await assertParentValid(env, next.project_id, next.parent_task_id, next.id);
   }
   await env.DB.prepare(
-    "UPDATE tasks SET title = ?1, description_enc = ?2, status = ?3, priority = ?4, assignee_account_id = ?5, parent_task_id = ?6, start_date = ?7, due_date = ?8, sort_order = ?9, estimate_minutes = ?10, version = ?11, updated_at = ?12 WHERE id = ?13",
+    "UPDATE tasks SET title = ?1, description_enc = ?2, status = ?3, priority = ?4, assignee_account_id = ?5, parent_task_id = ?6, start_date = ?7, due_date = ?8, sort_order = ?9, estimate_minutes = ?10, estimate_points = ?11, estimate_size = ?12, version = ?13, updated_at = ?14 WHERE id = ?15",
   )
     .bind(
       next.title, next.description_enc, next.status, next.priority,
       next.assignee_account_id, next.parent_task_id, next.start_date,
-      next.due_date, next.sort_order, next.estimate_minutes, next.version,
+      next.due_date, next.sort_order, next.estimate_minutes,
+      next.estimate_points, next.estimate_size, next.version,
       next.updated_at, next.id,
     )
     .run();
@@ -657,6 +709,14 @@ export async function restoreTaskFromSnapshot(
       snapshot["estimate_minutes"] !== undefined
         ? (snapshot["estimate_minutes"] as number | null)
         : current.estimate_minutes,
+    estimate_points:
+      snapshot["estimate_points"] !== undefined
+        ? (snapshot["estimate_points"] as number | null)
+        : (current.estimate_points ?? null),
+    estimate_size:
+      snapshot["estimate_size"] !== undefined
+        ? (snapshot["estimate_size"] as string | null)
+        : (current.estimate_size ?? null),
     archived_at:
       snapshot["archived_at"] !== undefined
         ? (snapshot["archived_at"] as string | null)
@@ -669,12 +729,13 @@ export async function restoreTaskFromSnapshot(
     await assertParentValid(env, next.project_id, next.parent_task_id, next.id);
   }
   await env.DB.prepare(
-    "UPDATE tasks SET title = ?1, description_enc = ?2, status = ?3, priority = ?4, assignee_account_id = ?5, parent_task_id = ?6, start_date = ?7, due_date = ?8, sort_order = ?9, estimate_minutes = ?10, archived_at = ?11, version = ?12, updated_at = ?13 WHERE id = ?14",
+    "UPDATE tasks SET title = ?1, description_enc = ?2, status = ?3, priority = ?4, assignee_account_id = ?5, parent_task_id = ?6, start_date = ?7, due_date = ?8, sort_order = ?9, estimate_minutes = ?10, estimate_points = ?11, estimate_size = ?12, archived_at = ?13, version = ?14, updated_at = ?15 WHERE id = ?16",
   )
     .bind(
       next.title, next.description_enc, next.status, next.priority,
       next.assignee_account_id, next.parent_task_id, next.start_date,
       next.due_date, next.sort_order, next.estimate_minutes,
+      next.estimate_points, next.estimate_size,
       next.archived_at, next.version, next.updated_at, next.id,
     )
     .run();
@@ -744,6 +805,7 @@ export async function restoreDeletedTask(
 interface RecurrenceRuleShape {
   id: string;
   freq: string;
+  basis?: string | null;
   interval_count: number;
   by_weekday_json: string | null;
   end_date: string | null;
@@ -828,9 +890,17 @@ export async function spawnNextOccurrence(
       .run();
     return null;
   }
-  const base = completed.due_date ?? completed.start_date ?? nowIso().slice(0, 10);
+  // Basis (phase 5): 'schedule' derives the next dates from the
+  // previous due/start (phase 3 behaviour); 'completion' derives them
+  // from the completion date, preserving the start->due duration.
+  const completionDate = nowIso().slice(0, 10);
+  const completionBasis = rule.basis === "completion";
+  const base = completionBasis
+    ? completionDate
+    : (completed.due_date ?? completed.start_date ?? completionDate);
   const nextDue = nextRecurrenceDate(rule, base);
-  if (rule.end_date && nextDue > rule.end_date) {
+  const lastDate = completed.due_date ? nextDue : nextRecurrenceDate(rule, base);
+  if (rule.end_date && lastDate > rule.end_date) {
     await env.DB.prepare(
       "UPDATE recurrence_rules SET active = ?1, updated_at = ?2 WHERE id = ?3",
     )
@@ -847,6 +917,8 @@ export async function spawnNextOccurrence(
       Date.parse(`${completed.start_date}T12:00:00Z`) + deltaMs,
     );
     nextStart = shifted.toISOString().slice(0, 10);
+  } else if (completionBasis && completed.start_date && !completed.due_date) {
+    nextStart = nextDue;
   }
   const project = await env.DB.prepare(
     "SELECT * FROM projects WHERE id = ?1 AND deleted_at IS NULL",
@@ -875,6 +947,8 @@ export async function spawnNextOccurrence(
       dueDate: completed.due_date ? nextDue : null,
       sortOrder: completed.sort_order,
       estimateMinutes: completed.estimate_minutes,
+      estimatePoints: completed.estimate_points ?? null,
+      estimateSize: completed.estimate_size ?? null,
     },
     source,
   );
@@ -885,10 +959,11 @@ export async function spawnNextOccurrence(
     .bind(0, now, rule.id)
     .run();
   await env.DB.prepare(
-    "INSERT INTO recurrence_rules (id, tenant_id, task_id, freq, interval_count, by_weekday_json, end_date, max_count, generated_count, active, created_by_account_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+    "INSERT INTO recurrence_rules (id, tenant_id, task_id, freq, basis, interval_count, by_weekday_json, end_date, max_count, generated_count, active, created_by_account_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
   )
     .bind(
       randomId(), completed.tenant_id, spawned.id, rule.freq,
+      rule.basis ?? "schedule",
       rule.interval_count, rule.by_weekday_json, rule.end_date,
       rule.max_count, generated + 1, 1, rule.created_by_account_id, now, now,
     )
@@ -1625,6 +1700,7 @@ export async function dashboard(
   localDate: string,
   tzOffsetMinutes: number,
   now: string = nowIso(),
+  weekStartDow: number = 1,
 ) {
   const entries = await listEntriesForAccount(
     env,
@@ -1642,7 +1718,7 @@ export async function dashboard(
     return r;
   };
   const day = localDayRangeUtc(localDate, tzOffsetMinutes);
-  const weekFrom = weekStart(localDate);
+  const weekFrom = weekStartOn(localDate, weekStartDow);
   const week = localDayRangeUtc(weekFrom, tzOffsetMinutes);
   const weekEnd = new Date(
     Date.parse(week.start) + 7 * 24 * 60 * 60_000,

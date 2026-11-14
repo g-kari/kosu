@@ -9,6 +9,7 @@
 import { recordAudit } from "./audit";
 import { badRequest, notFound } from "./errors";
 import { randomId, randomToken, sha256Hex } from "./tokens";
+import { isValidIpEntry } from "./security";
 import type { Env } from "./types";
 
 export const API_KEY_PREFIX = "kosu";
@@ -23,6 +24,8 @@ export interface ApiKeyRow {
   key_hash: string;
   key_prefix: string;
   scopes: string;
+  /** Phase 5: comma-separated allowed IPs / IPv4 CIDRs, or null. */
+  ip_allowlist?: string | null;
   created_at: string;
   revoked_at: string | null;
   last_used_at: string | null;
@@ -67,10 +70,33 @@ export function publicKey(row: ApiKeyRow) {
     name: row.name,
     prefix: row.key_prefix,
     scopes: parseScopes(row.scopes),
+    ip_allowlist: row.ip_allowlist ?? null,
     created_at: row.created_at,
     revoked_at: row.revoked_at,
     last_used_at: row.last_used_at,
   };
+}
+
+/** Validate and canonicalize an IP allowlist (phase 5 item 12). */
+export function normalizeIpAllowlist(input: unknown): string | null {
+  if (input === null || input === undefined) return null;
+  if (!Array.isArray(input)) {
+    throw badRequest('"ip_allowlist" must be an array of IPs/CIDRs or null');
+  }
+  const entries: string[] = [];
+  for (const item of input) {
+    if (typeof item !== "string" || !isValidIpEntry(item)) {
+      throw badRequest(
+        '"ip_allowlist" entries must be IPv4, IPv4 CIDR or IPv6 addresses',
+      );
+    }
+    const e = item.trim();
+    if (!entries.includes(e)) entries.push(e);
+  }
+  if (entries.length > 50) {
+    throw badRequest('"ip_allowlist" may contain at most 50 entries');
+  }
+  return entries.length === 0 ? null : entries.join(",");
 }
 
 export interface FoundApiKey {
@@ -122,6 +148,7 @@ export async function issueApiKey(
   accountId: string,
   name: string,
   scopes: string[],
+  ipAllowlist: string | null = null,
 ): Promise<{ apiKey: string; key: ReturnType<typeof publicKey> }> {
   const apiKey = randomToken(API_KEY_PREFIX);
   const now = new Date().toISOString();
@@ -133,12 +160,13 @@ export async function issueApiKey(
     key_hash: await sha256Hex(apiKey),
     key_prefix: keyPrefix(apiKey),
     scopes: scopes.join(" "),
+    ip_allowlist: ipAllowlist,
     created_at: now,
     revoked_at: null,
     last_used_at: null,
   };
   await env.DB.prepare(
-    "INSERT INTO api_keys (id, tenant_id, account_id, name, key_hash, key_prefix, scopes, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    "INSERT INTO api_keys (id, tenant_id, account_id, name, key_hash, key_prefix, scopes, ip_allowlist, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
   )
     .bind(
       row.id,
@@ -148,6 +176,7 @@ export async function issueApiKey(
       row.key_hash,
       row.key_prefix,
       row.scopes,
+      row.ip_allowlist,
       row.created_at,
     )
     .run();
@@ -160,6 +189,40 @@ export async function issueApiKey(
     detail: `${row.name} (${row.scopes})`,
   });
   return { apiKey, key: publicKey(row) };
+}
+
+/** Update a key's IP allowlist (owner, or tenant admin for others). */
+export async function updateApiKeyIpAllowlist(
+  env: Env,
+  tenantId: string,
+  keyId: string,
+  actorAccountId: string,
+  canManageOthers: boolean,
+  ipAllowlist: string | null,
+): Promise<ReturnType<typeof publicKey>> {
+  const row = await env.DB.prepare(
+    "SELECT * FROM api_keys WHERE id = ?1 AND tenant_id = ?2",
+  )
+    .bind(keyId, tenantId)
+    .first<ApiKeyRow>();
+  if (!row || row.revoked_at) throw notFound("API key not found");
+  if (row.account_id !== actorAccountId && !canManageOthers) {
+    throw notFound("API key not found");
+  }
+  await env.DB.prepare(
+    "UPDATE api_keys SET ip_allowlist = ?1 WHERE id = ?2",
+  )
+    .bind(ipAllowlist, row.id)
+    .run();
+  await recordAudit(env, {
+    tenantId,
+    accountId: actorAccountId,
+    action: "api_key.update",
+    targetType: "api_key",
+    targetId: row.id,
+    detail: "ip_allowlist",
+  });
+  return publicKey({ ...row, ip_allowlist: ipAllowlist });
 }
 
 /**

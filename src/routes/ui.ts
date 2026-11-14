@@ -36,7 +36,7 @@ import { OFFLINE_URL, assetUrl, prefsFor, sessionAccountId, shell } from "./page
 
 export const uiRoutes = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-export const APP_VERSION = "0.10.0";
+export const APP_VERSION = "0.11.0";
 
 /** The service identity JSON (moved from `GET /`, kept for compat). */
 export const SERVICE_IDENTITY = {
@@ -53,14 +53,46 @@ export const SERVICE_IDENTITY = {
 export const UI_SCRIPT = `
 window.KosuUI = (() => {
   const $ = (id) => document.getElementById(id);
-  async function api(path, opts) {
-    const r = await fetch(path, opts);
-    if (!r.ok) {
-      const j = await r.json().catch(() => null);
-      throw new Error((j && j.error && j.error.message) || ("HTTP " + r.status));
+  let busyCount = 0;
+  function setBusy(delta) {
+    busyCount = Math.max(0, busyCount + delta);
+    let bar = document.getElementById("busybar");
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.id = "busybar";
+      bar.setAttribute("aria-hidden", "true");
+      document.body.appendChild(bar);
     }
-    if (r.status === 204) return {};
-    return r.json();
+    bar.style.display = busyCount > 0 ? "" : "none";
+  }
+  let toastTimer = null;
+  function toast(text) {
+    let el = document.getElementById("kosuToast");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "kosuToast";
+      el.className = "toast";
+      el.setAttribute("role", "status");
+      document.body.appendChild(el);
+    }
+    el.textContent = text;
+    el.style.display = "";
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.style.display = "none"; }, 3200);
+  }
+  async function api(path, opts) {
+    setBusy(1);
+    try {
+      const r = await fetch(path, opts);
+      if (!r.ok) {
+        const j = await r.json().catch(() => null);
+        throw new Error((j && j.error && j.error.message) || ("HTTP " + r.status));
+      }
+      if (r.status === 204) return {};
+      return r.json();
+    } finally {
+      setBusy(-1);
+    }
   }
   const jsonOpts = (method, body) => ({
     method,
@@ -389,7 +421,7 @@ window.KosuUI = (() => {
     })();
   }
   return {
-    $, api, jsonOpts, fillSelect,
+    $, api, jsonOpts, fillSelect, toast,
     fmtHMS, fmtHM, localDate, todayStr, addDays,
     tenantPath, projectPath, currentProject,
     projects: () => projectsCache,
@@ -980,12 +1012,40 @@ function renderList() {
   const tbody = $("taskRows");
   tbody.innerHTML = "";
   const today = ui.todayStr();
-  for (const item of orderedTasks()) {
+  const items = orderedTasks();
+  if (items.length === 0) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 6;
+    td.className = "muted";
+    if (taskCache.length === 0) {
+      td.textContent = "タスクがまだありません。";
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = "最初のタスクを作成";
+      b.onclick = () => { $("createForm").scrollIntoView({ behavior: "smooth", block: "start" }); $("cTitle").focus(); };
+      td.appendChild(document.createTextNode(" "));
+      td.appendChild(b);
+    } else {
+      td.textContent = "条件に合うタスクがありません。";
+    }
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+  for (const item of items) {
     const t = item.task;
     const tr = document.createElement("tr");
     tr.className = "clickable";
     if (t.id === selectedId) tr.style.background = "#eef1f8";
     tr.onclick = () => selectTask(t.id);
+    tr.tabIndex = 0;
+    tr.onkeydown = (ev) => {
+      if (ev.target === tr && (ev.key === "Enter" || ev.key === " ")) {
+        ev.preventDefault();
+        selectTask(t.id);
+      }
+    };
     const td1 = document.createElement("td");
     td1.textContent = (item.depth ? "　".repeat(item.depth) + "↳ " : "") + t.title;
     if (t.archived_at) td1.className = "muted";
@@ -1237,6 +1297,7 @@ ui.onReady(async () => {
       $("cTitle").value = "";
       await loadTasks();
       await selectTask(r.task.id);
+      ui.toast("タスクを作成しました");
     } catch (e) { $("msg").textContent = e.message; }
   };
   $("editForm").onsubmit = async (ev) => {
@@ -1288,14 +1349,16 @@ ui.onReady(async () => {
   };
   $("dTimer").onclick = async () => {
     if (!selectedTask) return;
+    const stopping = $("dTimer").textContent === "タイマー停止";
     try {
-      if ($("dTimer").textContent === "タイマー停止") {
+      if (stopping) {
         await ui.api(ui.tenantPath() + "/timer/stop", ui.jsonOpts("POST"));
       } else {
         await ui.api(ui.tenantPath() + "/timer/start", ui.jsonOpts("POST", { task_id: selectedTask.id }));
       }
       await ui.refreshTimerChip();
       await loadDetailExtras(selectedTask);
+      ui.toast(stopping ? "タイマーを停止しました" : "タイマーを開始しました");
     } catch (e) { $("msg").textContent = e.message; }
   };
   $("subAdd").onclick = async () => {
@@ -1586,6 +1649,7 @@ ui.onReady(async () => {
     const started = new Date($("mDate").value + "T" + $("mStart").value + ":00");
     const ended = new Date($("mDate").value + "T" + $("mEnd").value + ":00");
     if (!(ended > started)) { $("msg").textContent = "終了は開始より後にしてください"; return; }
+    const wasEdit = editingId;
     try {
       if (editingId) {
         await ui.api(ui.tenantPath() + "/time-entries/" + editingId, ui.jsonOpts("PATCH", {
@@ -1604,6 +1668,7 @@ ui.onReady(async () => {
       resetManual();
       await loadTaskIndex();
       await loadWeek();
+      ui.toast(wasEdit ? "工数を修正しました" : "工数を追加しました");
     } catch (e) { $("msg").textContent = e.message; }
   };
   $("prevWeek").onclick = async () => { weekStart = ui.addDays(weekStart, -7); await loadWeek(); };

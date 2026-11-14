@@ -4,6 +4,8 @@
 
 - 公開先: https://kosu.0g0.xyz
 - 設計メモ: [docs/DESIGN.md](docs/DESIGN.md)
+- MCP リファレンス: [docs/MCP.md](docs/MCP.md)
+- 外部連携ガイド: [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md)
 
 ## 特徴（予定を含む）
 
@@ -33,4 +35,10 @@ npm run deploy     # wrangler deploy
 
 ## ステータス
 
-スキャフォールド段階。D1 / R2 の実リソース作成、0g0-id のクライアント登録、デプロイはこれから行います。
+本番稼働中（v0.5.0）。フェーズ1（土台と認証）、フェーズ2（タスク・工数・
+差分同期・ガント）、フェーズ3（実務機能：ラベル・レポート・承認フロー・
+通知など）、フェーズ4（連携と MCP：MCP エンドポイント、プラグイン実体、
+Linear / GitHub Issues 自動連携、Slack 通知、iCal フィード、メールで
+タスク作成、TimeCrowd・移行インポート、テナント書き出し）まで実装済み。
+フェーズ5（拡張と運用）は今後対応します。詳細は docs/DESIGN.md の
+フェーズ計画を参照してください。

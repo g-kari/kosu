@@ -3,6 +3,7 @@ import sql0001 from "../migrations/0001_init.sql?raw";
 import sql0002 from "../migrations/0002_hierarchy.sql?raw";
 import sql0003 from "../migrations/0003_phase2.sql?raw";
 import sql0004 from "../migrations/0004_phase3.sql?raw";
+import sql0005 from "../migrations/0005_phase4.sql?raw";
 
 // Applies the real migration files to an in-memory SQLite (Node's built-in
 // node:sqlite) to prove 0001 + 0002 compose into the phase-1 schema.
@@ -163,6 +164,43 @@ describe("migrations", () => {
       expect(columns("sync_conflicts").has(col), `sync_conflicts.${col}`).toBe(
         true,
       );
+    }
+    const violations = db.prepare("PRAGMA foreign_key_check").all();
+    expect(violations).toHaveLength(0);
+    db.close();
+  });
+
+  it("0005 adds the phase-4 integration schema", async () => {
+    const db = await openSqlite();
+    if (!db) return;
+    db.exec(sql0001);
+    db.exec(sql0002);
+    db.exec(sql0003);
+    db.exec(sql0004);
+    db.exec(sql0005);
+    const rows = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all() as { name: string }[];
+    const tables = new Set(rows.map((r) => r.name));
+    for (const expected of [
+      "integration_connections",
+      "external_items",
+      "integration_sync_runs",
+      "ical_feeds",
+      "mail_inbound_tokens",
+    ]) {
+      expect(tables.has(expected), `missing table ${expected}`).toBe(true);
+    }
+    const columns = (table: string) =>
+      new Set(
+        (
+          db.prepare(`PRAGMA table_info(${table})`).all() as {
+            name: string;
+          }[]
+        ).map((r) => r.name),
+      );
+    for (const col of ["tenant_id", "created_by_account_id"]) {
+      expect(columns("links").has(col), `links.${col}`).toBe(true);
     }
     const violations = db.prepare("PRAGMA foreign_key_check").all();
     expect(violations).toHaveLength(0);

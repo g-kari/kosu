@@ -403,3 +403,83 @@ export interface InviteRow {
   revoked_at: string | null;
   created_at: string;
 }
+
+/* ------------------------------------------------------------------ */
+/* Phase 4 row shapes                                                   */
+/* ------------------------------------------------------------------ */
+
+export interface LinkRow {
+  id: string;
+  tenant_id: string | null;
+  task_id: string;
+  kind: string;
+  url: string;
+  external_id: string | null;
+  title_cache: string | null;
+  created_by_account_id: string | null;
+  created_at: string;
+}
+
+export interface IntegrationConnectionRow {
+  id: string;
+  tenant_id: string;
+  provider: string;
+  project_id: string | null;
+  name: string;
+  config_json: string;
+  secret_enc: string | null;
+  webhook_secret_enc: string | null;
+  enabled: number;
+  created_by_account_id: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface ExternalItemRow {
+  id: string;
+  tenant_id: string;
+  connection_id: string | null;
+  provider: string;
+  external_id: string;
+  entity_type: string;
+  entity_id: string;
+  external_updated_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IntegrationSyncRunRow {
+  id: string;
+  tenant_id: string;
+  connection_id: string | null;
+  provider: string;
+  kind: string;
+  status: string;
+  stats_json: string;
+  message: string | null;
+  created_by_account_id: string | null;
+  created_at: string;
+}
+
+export interface IcalFeedRow {
+  id: string;
+  tenant_id: string;
+  account_id: string;
+  token_hash: string;
+  label: string | null;
+  created_at: string;
+  last_accessed_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface MailInboundTokenRow {
+  id: string;
+  tenant_id: string;
+  project_id: string;
+  token_hash: string;
+  label: string | null;
+  created_by_account_id: string;
+  created_at: string;
+  revoked_at: string | null;
+}

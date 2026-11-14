@@ -154,6 +154,22 @@
 - ActivityWatch 連携（自動記録を取り込み、工数の下書きにする）
 - テナント単位のデータ書き出し（バックアップ）
 
+#### フェーズ4の実装メモ（2026-11-14、v0.5.0）
+
+- **MCP**: `POST /mcp`（Streamable HTTP、ステートレス JSON-RPC 2.0）。認証は API キー（Bearer、キーのテナントが既定）またはセッション。スコープ判定はツール単位（読み取り専用キーは書き込みツールを isError で拒否。トランスポートが POST でも読み取りを許可するため）。ツールは15件（タスク CRUD、工数記録とタイマー、ガント取得、リンク参照・追加、連携一覧・手動同期、ダッシュボード）。詳細は docs/MCP.md
+- **プラグイン**: plugins/ に実物を同梱。Claude Code は `.claude-plugin/plugin.json` + `.mcp.json` + `skills/kosu/SKILL.md`、Codex は `config.toml`（bearer_token_env_var）+ `AGENTS.md`、dsh は `mcp.json` + `SKILL.md`。キーは全形式とも環境変数 `KOSU_API_KEY` 経由で、ファイルに実キーを書かない
+- **連携の共通基盤**（migration 0005）: `integration_connections`（provider、取り込み先プロジェクト、config_json、secret_enc＝トークンの暗号文、webhook_secret_enc、enabled）。トークンは書き込み専用で再表示しない。未設定の接続は「未接続」と明示し、外部へは一切アクセスしない。同期履歴は `integration_sync_runs`（manual / webhook / import）。重複防止は `external_items` の (tenant_id, provider, external_id) 一意索引
+- **Linear / GitHub Issues**: 手動同期（API 取得、前回成功時刻以降を対象）と Webhook（接続作成時に受付 URL + シークレットを1回だけ発行、HMAC-SHA256 署名検証）の両対応。取り込みは片方向（Issue → タスク）で確定。本文はコピーしない（クライアント暗号化のため）。タスクへのリンクを自動で付け、状態はカテゴリ（open/doing/done）へ写す。ローカルで削除したミラータスクは復活させない
+- **PR マージで自動完了**: タスクの `github_pr` リンク（外部 ID の既定は PR の URL）と Webhook の照合で実施。監査ログに記録する
+- **Slack**: リンク種別 `slack` の紐付けと、通知イベントの Incoming Webhook 投稿（テナントの有効な slack 接続へイベントごとに1回）。チャンネル名 config は表示用ラベル
+- **Google カレンダー**: サービス側に OAuth 資格情報が未設定のため、設定画面と未接続表示、状態 API（理由と到達範囲の明示）まで。予定取り込みは資格情報の設定後に有効化する設計として明記
+- **iCal フィード**: アカウント単位でトークン発行（ハッシュ保存、失効可）。自分が読めるプロジェクトの期限つきタスクを終日イベントで配信する
+- **メールでタスク作成**: プロジェクト単位の受付トークン（ハッシュ保存）へ転送サービスが JSON を POST する形。実メールボックス接続は範囲外
+- **TimeCrowd**: 手動同期でタスク・工数を取り込み（外部 ID で重複防止、工数は実行者のものとして記録）
+- **移行インポート**: Toggl / Clockify / Kimai / 汎用 CSV と ActivityWatch JSON。内容ハッシュで冪等化（上限 5,000 行）。ActivityWatch は30秒未満を除外しアプリ別タスクへの下書きにする。説明文はコピーしない
+- **テナント書き出し**: オーナーのみ。暗号化フィールドは暗号文のまま、秘密情報（トークン類・ハッシュ・セッション等）は除外し `has_secret` フラグのみ残す
+- **設定画面**: `/app/settings/integrations`（連携 CRUD・同期・履歴、iCal フィード、メール受付トークン、Google カレンダー状態、書き出し導線）
+
 ### フェーズ5：拡張と運用
 - 自動化ルール（状態変化や PR マージをきっかけにした自動処理）
 - プロジェクトテンプレート、完了ベースの繰り返し

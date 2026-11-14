@@ -4,8 +4,11 @@ import { runDeadlineReminders } from "./notify";
 import { apiRoutes } from "./routes/api";
 import { authRoutes } from "./routes/auth";
 import { collabRoutes } from "./routes/collab";
+import { integrationRoutes } from "./routes/integrations";
+import { mcpRoutes } from "./routes/mcp";
 import { opsRoutes } from "./routes/ops";
 import { pageRoutes } from "./routes/pages";
+import { publicInRoutes } from "./routes/public-in";
 import { syncRoutes } from "./routes/sync";
 import { taskRoutes } from "./routes/tasks";
 import { workRoutes } from "./routes/work";
@@ -20,7 +23,7 @@ app.get("/", (c) =>
     name: "Kosu",
     service: "kosu",
     status: "ok",
-    version: "0.4.0",
+    version: "0.5.0",
   }),
 );
 
@@ -33,6 +36,9 @@ app.route("/", syncRoutes);
 app.route("/", collabRoutes);
 app.route("/", workRoutes);
 app.route("/", opsRoutes);
+app.route("/", integrationRoutes);
+app.route("/", mcpRoutes);
+app.route("/", publicInRoutes);
 app.route("/", pageRoutes);
 
 app.notFound((c) =>

@@ -1,0 +1,7 @@
+# Kosu MCP server for Codex.
+# Append this table to ~/.codex/config.toml (or your project config).
+# The API key is read from the KOSU_API_KEY environment variable; never
+# write a real key into this file.
+[mcp_servers.kosu]
+url = "https://kosu.0g0.xyz/mcp"
+bearer_token_env_var = "KOSU_API_KEY"

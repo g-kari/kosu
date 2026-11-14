@@ -36,6 +36,21 @@ describe("pages", () => {
     expect(html).toContain("/auth/login");
   });
 
+  it("renders the integrations settings page for a logged-in user", async () => {
+    const db = new FakeDb();
+    const anon = await call(db, "/app/settings/integrations");
+    expect(anon.status).toBe(302);
+    const owner = await setupOwner(db);
+    const page = await call(db, "/app/settings/integrations", {
+      cookie: owner.cookie,
+    });
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).toContain("外部連携・MCP 設定");
+    expect(html).toContain("iCal フィード");
+    expect(html).toContain("メールでタスク作成");
+  });
+
   it("renders the accept UI on the invite page when logged in", async () => {
     const db = new FakeDb();
     const owner = await setupOwner(db);

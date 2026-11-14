@@ -22,6 +22,7 @@ import { addDays } from "./timecalc";
 import { resolveStatuses } from "./workflow";
 import type {
   Env,
+  IntegrationConnectionRow,
   NotificationRow,
   TaskRow,
   WebhookEndpointRow,
@@ -291,6 +292,45 @@ export type Fetcher = (
 /* Dispatch                                                             */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Post an event to the tenant's Slack connection (phase 4), when one is
+ * enabled and has an Incoming Webhook URL stored as its secret. Slack is
+ * a tenant-level channel: one post per dispatched event, independent of
+ * per-account channel preferences. Failures are ignored (best-effort,
+ * same as webhook endpoints).
+ */
+export async function deliverSlackNotification(
+  env: Env,
+  event: { tenantId: string; kind: string; title: string },
+  fetcher: Fetcher = (url, init) => fetch(url, init),
+): Promise<boolean> {
+  const conn = await env.DB.prepare(
+    "SELECT * FROM integration_connections WHERE tenant_id = ?1 AND provider = ?2 AND enabled = ?3 AND secret_enc IS NOT NULL ORDER BY created_at ASC",
+  )
+    .bind(event.tenantId, "slack", 1)
+    .first<IntegrationConnectionRow>();
+  if (!conn || !conn.secret_enc) return false;
+  const webhookUrl = await decryptField(
+    env.FIELD_ENCRYPTION_KEY,
+    conn.secret_enc,
+  );
+  if (!webhookUrl) return false;
+  const text = `[Kosu] ${event.title}`.slice(0, 500);
+  try {
+    const res = await fetcher(webhookUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        text,
+        blocks: [{ type: "section", text: { type: "mrkdwn", text } }],
+      }),
+    });
+    return res.status >= 200 && res.status < 300;
+  } catch {
+    return false;
+  }
+}
+
 export interface NotifyEvent {
   kind: NotificationKind;
   tenantId: string;
@@ -411,6 +451,7 @@ export async function dispatchNotifications(
       }
     }
   }
+  await deliverSlackNotification(env, event, fetcher);
   return { notified, webhookDeliveries: deliveries };
 }
 

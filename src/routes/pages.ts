@@ -62,6 +62,7 @@ pageRoutes.get("/app", async (c) => {
   <div class="card"><div class="muted">今週の工数（月曜始まり）</div><div class="big" id="week">–</div><div class="muted" id="weekRaw"></div></div>
   <div class="card"><div class="muted">同期ステータス</div><div class="big" id="syncSeq">–</div><div class="muted" id="syncInfo"></div></div>
 </div>
+<p><a href="/app/settings/integrations">外部連携・MCP の設定</a></p>
 <h2>実行中のタイマー</h2>
 <div id="running"><p class="muted">なし</p></div>
 <h2>進行中のタスク</h2>
@@ -298,6 +299,249 @@ async function load() {
 (async () => { try { await load(); } catch (err) { $("msg").textContent = "読み込みに失敗しました: " + err.message; } })();
 `;
   return c.html(shell("同期の競合", body, script));
+});
+
+pageRoutes.get("/app/settings/integrations", async (c) => {
+  if (!(await loggedIn(c))) return c.redirect("/auth/login", 302);
+  const body = `
+<h1>外部連携・MCP 設定</h1>
+<p class="muted"><a href="/app">← ダッシュボード</a></p>
+<p class="muted" id="who"></p>
+<div id="notice" class="card" style="display:none"></div>
+<h2>連携一覧</h2>
+<table><thead><tr><th>名前</th><th>種別</th><th>状態</th><th>最終同期</th><th></th></tr></thead><tbody id="conns"></tbody></table>
+<h2>連携を追加</h2>
+<form id="createForm">
+<p>種別
+<select id="fProvider">
+<option value="linear">Linear（Issue をタスク化）</option>
+<option value="github">GitHub Issues（Issue をタスク化）</option>
+<option value="slack">Slack（通知）</option>
+<option value="google_calendar">Google カレンダー</option>
+<option value="timecrowd">TimeCrowd（取り込み）</option>
+</select></p>
+<p>名前 <input id="fName" type="text" size="30"></p>
+<p>取り込み先プロジェクト <select id="fProject"></select></p>
+<p id="rowRepo">GitHub リポジトリ（owner/repo） <input id="fRepo" type="text" size="30"></p>
+<p id="rowTeam">Linear チーム ID（任意） <input id="fTeam" type="text" size="30"></p>
+<p id="rowChannel">Slack チャンネル名（任意・表示用） <input id="fChannel" type="text" size="30"></p>
+<p id="rowCalendar">カレンダー ID（任意） <input id="fCalendar" type="text" size="30"></p>
+<p id="rowBase">TimeCrowd API ベース URL（任意） <input id="fBase" type="text" size="40"></p>
+<p><span id="tokenLabel">API トークン</span> <input id="fToken" type="password" size="40" autocomplete="off">
+<span class="muted">未入力なら「未接続」として登録されます。トークンは暗号化して保存し、再表示はしません。</span></p>
+<p><button type="submit">追加する</button></p>
+</form>
+<h2>同期履歴</h2>
+<table><thead><tr><th>日時</th><th>種別</th><th>方法</th><th>結果</th><th>内容</th></tr></thead><tbody id="runs"></tbody></table>
+<h2>iCal フィード（タスク期限の購読）</h2>
+<p class="muted">期限のあるタスクをカレンダーアプリで購読できます。フィード URL は作成時に1回だけ表示します。</p>
+<p><button id="icalCreate" class="secondary">フィードを作成</button></p>
+<table><thead><tr><th>ラベル</th><th>作成日時</th><th>最終アクセス</th><th></th></tr></thead><tbody id="feeds"></tbody></table>
+<h2>メールでタスク作成</h2>
+<p class="muted">転送サービスから POST するためのトークンをプロジェクトごとに発行します。受付 URL は作成時に1回だけ表示します。</p>
+<p>プロジェクト <select id="mProject"></select> <button id="mailCreate" class="secondary">トークンを発行</button></p>
+<table><thead><tr><th>ラベル</th><th>作成日時</th><th></th></tr></thead><tbody id="mailTokens"></tbody></table>
+<h2>Google カレンダー</h2>
+<p id="gcal" class="muted">確認中…</p>
+<h2>データ書き出し（バックアップ）</h2>
+<p class="muted">テナントの全データを JSON で書き出します（オーナーのみ）。暗号化フィールドは暗号文のまま、連携トークン類は含まれません。</p>
+<p><a id="exportLink" href="#">kosu-export.json をダウンロード</a></p>
+<p id="msg" class="err"></p>`;
+  const script = `
+const $ = (id) => document.getElementById(id);
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error((j.error && j.error.message) || ("HTTP " + r.status)); }
+  return r.json();
+}
+const jsonOpts = (method, body) => ({ method, headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}) });
+let tenantId = null;
+let projects = [];
+function showNotice(title, lines) {
+  const box = $("notice");
+  box.style.display = "";
+  box.innerHTML = "";
+  const h = document.createElement("div");
+  h.innerHTML = "<strong></strong>";
+  h.firstChild.textContent = title;
+  box.appendChild(h);
+  for (const line of lines) {
+    const p = document.createElement("p");
+    const code = document.createElement("code");
+    code.textContent = line;
+    p.appendChild(code);
+    box.appendChild(p);
+  }
+  const note = document.createElement("p");
+  note.className = "muted";
+  note.textContent = "この情報は再表示できません。控えてから他の操作をしてください。";
+  box.appendChild(note);
+}
+function statusText(it) {
+  if (it.status === "connected") return "接続済み";
+  if (it.status === "disabled") return "無効";
+  return "未接続" + (it.status_detail ? "（" + it.status_detail + "）" : "");
+}
+async function loadProjects() {
+  projects = [];
+  const wss = (await api("/api/v1/tenants/" + tenantId + "/workspaces")).workspaces;
+  for (const w of wss) {
+    const teams = (await api("/api/v1/tenants/" + tenantId + "/workspaces/" + w.id + "/teams")).teams;
+    for (const t of teams) {
+      const ps = (await api("/api/v1/tenants/" + tenantId + "/workspaces/" + w.id + "/teams/" + t.id + "/projects")).projects;
+      for (const p of ps) projects.push({ id: p.id, name: p.name, path: "/api/v1/tenants/" + tenantId + "/workspaces/" + w.id + "/teams/" + t.id + "/projects/" + p.id });
+    }
+  }
+  for (const sel of [$("fProject"), $("mProject")]) {
+    sel.innerHTML = "";
+    const none = document.createElement("option");
+    none.value = ""; none.textContent = "（なし）";
+    sel.appendChild(none);
+    for (const p of projects) {
+      const o = document.createElement("option");
+      o.value = p.id; o.textContent = p.name;
+      sel.appendChild(o);
+    }
+  }
+}
+function projectPath(id) { const p = projects.find((x) => x.id === id); return p ? p.path : null; }
+async function loadConns() {
+  const data = await api("/api/v1/tenants/" + tenantId + "/integrations");
+  const tbody = $("conns");
+  tbody.innerHTML = "";
+  for (const it of data.integrations) {
+    const tr = document.createElement("tr");
+    const cells = [it.name, it.provider, statusText(it), it.last_sync ? (it.last_sync.status + " / " + new Date(it.last_sync.at).toLocaleString()) : "—"];
+    for (const text of cells) { const td = document.createElement("td"); td.textContent = text; tr.appendChild(td); }
+    const ops = document.createElement("td");
+    const mk = (label, fn) => { const b = document.createElement("button"); b.className = "secondary"; b.textContent = label; b.onclick = fn; ops.appendChild(b); ops.appendChild(document.createTextNode(" ")); };
+    if (it.provider === "linear" || it.provider === "github" || it.provider === "timecrowd") {
+      mk("同期", async () => { try { const r = await api("/api/v1/tenants/" + tenantId + "/integrations/" + it.id + "/sync", jsonOpts("POST")); $("msg").textContent = "同期結果: " + r.sync_run.status + (r.sync_run.message ? " — " + r.sync_run.message : ""); await loadAll(); } catch (e) { $("msg").textContent = e.message; } });
+    }
+    mk(it.enabled ? "無効化" : "有効化", async () => { try { await api("/api/v1/tenants/" + tenantId + "/integrations/" + it.id, jsonOpts("PATCH", { enabled: !it.enabled })); await loadAll(); } catch (e) { $("msg").textContent = e.message; } });
+    mk("削除", async () => { try { await api("/api/v1/tenants/" + tenantId + "/integrations/" + it.id, { method: "DELETE" }); await loadAll(); } catch (e) { $("msg").textContent = e.message; } });
+    tr.appendChild(ops);
+    tbody.appendChild(tr);
+  }
+  if (data.integrations.length === 0) { const tr = document.createElement("tr"); const td = document.createElement("td"); td.colSpan = 5; td.className = "muted"; td.textContent = "連携はまだありません"; tr.appendChild(td); tbody.appendChild(tr); }
+}
+async function loadRuns() {
+  try {
+    const data = await api("/api/v1/tenants/" + tenantId + "/sync-runs");
+    const tbody = $("runs");
+    tbody.innerHTML = "";
+    for (const r of data.sync_runs.slice(0, 20)) {
+      const tr = document.createElement("tr");
+      const stats = r.stats ? Object.keys(r.stats).filter((k) => typeof r.stats[k] === "number").map((k) => k + "=" + r.stats[k]).join(" ") : "";
+      const cells = [new Date(r.created_at).toLocaleString(), r.provider, r.kind, r.status, (r.message || "") + (stats ? " (" + stats + ")" : "")];
+      for (const text of cells) { const td = document.createElement("td"); td.textContent = text; tr.appendChild(td); }
+      tbody.appendChild(tr);
+    }
+  } catch (e) { /* 管理者以外では履歴は見えません */ }
+}
+async function loadFeeds() {
+  const data = await api("/api/v1/tenants/" + tenantId + "/ical-feeds");
+  const tbody = $("feeds");
+  tbody.innerHTML = "";
+  for (const f of data.ical_feeds) {
+    const tr = document.createElement("tr");
+    const cells = [f.label || "（ラベルなし）", new Date(f.created_at).toLocaleString(), f.last_accessed_at ? new Date(f.last_accessed_at).toLocaleString() : "—"];
+    for (const text of cells) { const td = document.createElement("td"); td.textContent = text; tr.appendChild(td); }
+    const ops = document.createElement("td");
+    const b = document.createElement("button");
+    b.className = "secondary"; b.textContent = "失効";
+    b.onclick = async () => { try { await api("/api/v1/tenants/" + tenantId + "/ical-feeds/" + f.id, { method: "DELETE" }); await loadFeeds(); } catch (e) { $("msg").textContent = e.message; } };
+    ops.appendChild(b);
+    tr.appendChild(ops);
+    tbody.appendChild(tr);
+  }
+}
+async function loadMailTokens() {
+  const pid = $("mProject").value;
+  const tbody = $("mailTokens");
+  tbody.innerHTML = "";
+  if (!pid) return;
+  const path = projectPath(pid);
+  const data = await api(path + "/mail-inbound-tokens");
+  for (const t of data.mail_inbound_tokens) {
+    const tr = document.createElement("tr");
+    const cells = [t.label || "（ラベルなし）", new Date(t.created_at).toLocaleString()];
+    for (const text of cells) { const td = document.createElement("td"); td.textContent = text; tr.appendChild(td); }
+    const ops = document.createElement("td");
+    const b = document.createElement("button");
+    b.className = "secondary"; b.textContent = "失効";
+    b.onclick = async () => { try { await api(path + "/mail-inbound-tokens/" + t.id, { method: "DELETE" }); await loadMailTokens(); } catch (e) { $("msg").textContent = e.message; } };
+    ops.appendChild(b);
+    tr.appendChild(ops);
+    tbody.appendChild(tr);
+  }
+}
+async function loadAll() { await loadConns(); await loadRuns(); await loadFeeds(); await loadMailTokens(); }
+function syncProviderFields() {
+  const p = $("fProvider").value;
+  $("rowRepo").style.display = p === "github" ? "" : "none";
+  $("rowTeam").style.display = p === "linear" ? "" : "none";
+  $("rowChannel").style.display = p === "slack" ? "" : "none";
+  $("rowCalendar").style.display = p === "google_calendar" ? "" : "none";
+  $("rowBase").style.display = p === "timecrowd" ? "" : "none";
+  $("tokenLabel").textContent = p === "slack" ? "Incoming Webhook URL" : p === "google_calendar" ? "（このフェーズでは未使用）" : "API トークン";
+}
+$("fProvider").onchange = syncProviderFields;
+$("mProject").onchange = () => loadMailTokens().catch((e) => { $("msg").textContent = e.message; });
+$("createForm").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const p = $("fProvider").value;
+  const config = {};
+  if (p === "github") config.repo = $("fRepo").value.trim();
+  if (p === "linear" && $("fTeam").value.trim()) config.team_id = $("fTeam").value.trim();
+  if (p === "slack" && $("fChannel").value.trim()) config.channel = $("fChannel").value.trim();
+  if (p === "google_calendar" && $("fCalendar").value.trim()) config.calendar_id = $("fCalendar").value.trim();
+  if (p === "timecrowd" && $("fBase").value.trim()) config.base_url = $("fBase").value.trim();
+  const body = { provider: p, name: $("fName").value.trim() || p, config };
+  if ($("fProject").value) body.project_id = $("fProject").value;
+  if ($("fToken").value) body.token = $("fToken").value;
+  try {
+    const r = await api("/api/v1/tenants/" + tenantId + "/integrations", jsonOpts("POST", body));
+    $("fToken").value = "";
+    if (r.webhook_secret) {
+      showNotice("Webhook の受付情報（1回だけ表示）", [location.origin + r.webhook_path, "secret: " + r.webhook_secret]);
+    }
+    await loadAll();
+  } catch (e) { $("msg").textContent = e.message; }
+};
+$("icalCreate").onclick = async () => {
+  try {
+    const r = await api("/api/v1/tenants/" + tenantId + "/ical-feeds", jsonOpts("POST", {}));
+    showNotice("iCal フィード URL（1回だけ表示）", [location.origin + r.feed_path]);
+    await loadFeeds();
+  } catch (e) { $("msg").textContent = e.message; }
+};
+$("mailCreate").onclick = async () => {
+  const pid = $("mProject").value;
+  if (!pid) { $("msg").textContent = "プロジェクトを選んでください"; return; }
+  try {
+    const r = await api(projectPath(pid) + "/mail-inbound-tokens", jsonOpts("POST", {}));
+    showNotice("メール受付 URL（1回だけ表示）", [location.origin + r.inbound_path]);
+    await loadMailTokens();
+  } catch (e) { $("msg").textContent = e.message; }
+};
+(async () => {
+  try {
+    const me = await api("/api/v1/me");
+    tenantId = me.account.default_tenant_id || (me.tenants[0] && me.tenants[0].id);
+    $("who").textContent = "テナント: " + tenantId;
+    $("exportLink").href = "/api/v1/tenants/" + tenantId + "/export";
+    await loadProjects();
+    syncProviderFields();
+    const g = await api("/api/v1/tenants/" + tenantId + "/google-calendar/status");
+    $("gcal").textContent = g.detail;
+    await loadAll();
+  } catch (err) {
+    $("msg").textContent = "読み込みに失敗しました: " + err.message;
+  }
+})();
+`;
+  return c.html(shell("外部連携・MCP 設定", body, script));
 });
 
 pageRoutes.get("/invite/:token", async (c) => {

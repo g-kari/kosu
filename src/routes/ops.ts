@@ -228,6 +228,7 @@ opsRoutes.get(`${TENANT_PATH}/report/print`, async (c) => {
     .join("\n");
   const html = `<!doctype html>
 <html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kosu 工数レポート ${escapeHtml(params.from)} 〜 ${escapeHtml(params.to)}</title>
 <style>
 body { font-family: sans-serif; margin: 24px; color: #111; }
@@ -239,10 +240,10 @@ th:first-child, td:first-child { text-align: left; }
 <h1>${escapeHtml(tenant.name)} — 工数レポート</h1>
 <p>期間: ${escapeHtml(params.from)} 〜 ${escapeHtml(params.to)} / 集計単位: ${escapeHtml(params.groupBy)} / 通貨: ${escapeHtml(report.currency)}</p>
 <table>
-<thead><tr><th>項目</th><th>件数</th><th>実績 (h)</th><th>丸め後 (h)</th><th>コスト (セント)</th><th>期待値 (h)</th><th>予算 (セント)</th><th>予算超過</th></tr></thead>
+<thead><tr><th scope="col">項目</th><th scope="col">件数</th><th scope="col">実績 (h)</th><th scope="col">丸め後 (h)</th><th scope="col">コスト (セント)</th><th scope="col">期待値 (h)</th><th scope="col">予算 (セント)</th><th scope="col">予算超過</th></tr></thead>
 <tbody>
 ${rows}
-<tr><th>合計</th><th>${report.totals.entries}</th><th>${formatHours(report.totals.seconds)}</th><th>${formatHours(report.totals.rounded_seconds)}</th><th>${report.totals.cost_cents}</th><th></th><th></th><th></th></tr>
+<tr><th scope="row">合計</th><th scope="col">${report.totals.entries}</th><th scope="col">${formatHours(report.totals.seconds)}</th><th scope="col">${formatHours(report.totals.rounded_seconds)}</th><th scope="col">${report.totals.cost_cents}</th><th scope="col"></th><th scope="col"></th><th scope="col"></th></tr>
 </tbody></table>
 <p>このページは印刷・PDF 保存向けの表示です。</p>
 </body></html>`;

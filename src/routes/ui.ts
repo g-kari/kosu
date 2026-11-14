@@ -36,7 +36,7 @@ import { prefsFor, sessionAccountId, shell } from "./pages";
 
 export const uiRoutes = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-export const APP_VERSION = "0.7.0";
+export const APP_VERSION = "0.8.0";
 
 /** The service identity JSON (moved from `GET /`, kept for compat). */
 export const SERVICE_IDENTITY = {
@@ -171,9 +171,12 @@ window.KosuUI = (() => {
     if (!runningEntry) { chip.style.display = "none"; chip.innerHTML = ""; return; }
     chip.style.display = "";
     chip.innerHTML = "";
+    const dot = document.createElement("span");
+    dot.className = "timer-dot";
+    dot.setAttribute("aria-hidden", "true");
     const label = document.createElement("span");
     label.id = "timerElapsed";
-    label.textContent = "⏱ " + fmtHMS((Date.now() - Date.parse(runningEntry.started_at)) / 1000);
+    label.textContent = fmtHMS((Date.now() - Date.parse(runningEntry.started_at)) / 1000);
     const b = document.createElement("button");
     b.type = "button";
     b.textContent = "停止";
@@ -185,7 +188,7 @@ window.KosuUI = (() => {
         location.reload();
       } catch (e) { alert(e.message); }
     };
-    chip.append(label, b);
+    chip.append(dot, label, b);
   }
   async function refreshTimerChip() {
     const chip = $("timerChip");
@@ -249,7 +252,7 @@ window.KosuUI = (() => {
     setInterval(() => {
       if (runningEntry) {
         const el = $("timerElapsed");
-        if (el) el.textContent = "⏱ " + fmtHMS((Date.now() - Date.parse(runningEntry.started_at)) / 1000);
+        if (el) el.textContent = fmtHMS((Date.now() - Date.parse(runningEntry.started_at)) / 1000);
       }
     }, 1000);
   }
@@ -427,7 +430,7 @@ function appPage(
   const nav = items
     .map(
       ([key, href, label]) =>
-        `<a href="${href}"${key === active ? ' class="active"' : ""}>${label}</a>`,
+        `<a href="${href}"${key === active ? ' class="active" aria-current="page"' : ""}>${label}</a>`,
     )
     .join("\n");
   const body = `
@@ -448,7 +451,7 @@ ${nav}
 </div>
 </aside>
 <div class="content">
-<div class="topbar">
+<header class="topbar">
 <label>テナント <select id="ctxTenant" aria-label="テナント"></select></label>
 <label>ワークスペース <select id="ctxWorkspace" aria-label="ワークスペース"></select></label>
 <label>プロジェクト <select id="ctxProject" aria-label="プロジェクト"></select></label>
@@ -456,7 +459,7 @@ ${nav}
 <span id="timerChip" class="timer-chip" style="display:none"></span>
 <span class="muted" id="who"></span>
 <button type="button" class="secondary" id="logoutBtn">${t(locale, "nav.logout")}</button>
-</div>
+</header>
 <h1>${heading}</h1>
 ${inner}
 <p id="msg" class="err" role="alert"></p>
@@ -574,6 +577,21 @@ uiRoutes.get("/", async (c) => {
     ? "Kosu is a local-first time & task tracker: tasks and projects, a timer and manual time entries, Gantt charts and reports — with an MCP endpoint and plugins for your coding tools."
     : "Kosu はローカルファーストの工数・タスク管理サービスです。タスクとプロジェクト、タイマーと手入力の工数、ガントチャートとレポートに加えて、MCP エンドポイントと開発ツール向けプラグインを備えています。"}</p>
 ${cta}
+<svg viewBox="0 0 640 96" width="100%" style="max-width:640px" role="img" aria-label="${en ? "Flow: record time and tasks, encrypt and sync them local-first, then review Gantt charts and reports" : "流れ：工数とタスクを記録し、ローカルファーストで暗号化して同期し、ガントとレポートで確認する"}">
+<rect x="1" y="24" width="188" height="48" fill="none" stroke="#2456c8" stroke-width="2"/>
+<text x="95" y="46" text-anchor="middle" font-size="15" fill="currentColor">${en ? "Record" : "記録する"}</text>
+<text x="95" y="64" text-anchor="middle" font-size="11" fill="currentColor" opacity="0.65">${en ? "timer / manual entries" : "タイマー・手入力"}</text>
+<line x1="189" y1="48" x2="213" y2="48" stroke="#2456c8" stroke-width="2"/>
+<polygon points="225,48 211,41 211,55" fill="#2456c8"/>
+<rect x="226" y="24" width="188" height="48" fill="none" stroke="#2456c8" stroke-width="2"/>
+<text x="320" y="46" text-anchor="middle" font-size="15" fill="currentColor">${en ? "Encrypt & sync" : "暗号化して同期"}</text>
+<text x="320" y="64" text-anchor="middle" font-size="11" fill="currentColor" opacity="0.65">${en ? "local-first" : "ローカルファースト"}</text>
+<line x1="414" y1="48" x2="438" y2="48" stroke="#2456c8" stroke-width="2"/>
+<polygon points="450,48 436,41 436,55" fill="#2456c8"/>
+<rect x="451" y="24" width="188" height="48" fill="none" stroke="#2456c8" stroke-width="2"/>
+<text x="545" y="46" text-anchor="middle" font-size="15" fill="currentColor">${en ? "Review" : "集計する"}</text>
+<text x="545" y="64" text-anchor="middle" font-size="11" fill="currentColor" opacity="0.65">${en ? "Gantt / reports" : "ガント・レポート"}</text>
+</svg>
 <h2>${t(locale, "landing.features_title")}</h2>
 <ul>
 <li>${en ? "Tasks with subtasks, dependencies, labels, comments and custom statuses" : "タスク管理（サブタスク・依存・ラベル・コメント・ステータスカスタマイズ）"}</li>
@@ -684,6 +702,50 @@ ui.onReady(async () => {
     td.colSpan = 5; td.className = "muted"; td.textContent = "プロジェクトがまだありません";
     tr.appendChild(td); sumBody.appendChild(tr);
   }
+  // Week time by project as an SVG bar chart (diagram-first dashboard).
+  const chartData = projects
+    .map((p) => ({ name: p.name, seconds: weekByProject[p.id] || 0 }))
+    .filter((x) => x.seconds > 0)
+    .sort((a, b) => b.seconds - a.seconds);
+  const chartEl = $("projChart");
+  if (chartEl && chartData.length > 0) {
+    const maxSec = Math.max.apply(null, chartData.map((x) => x.seconds));
+    const rowH = 22, nameW = 150, barMax = 380, valW = 90;
+    const width = nameW + barMax + valW;
+    const height = chartData.length * rowH + 4;
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 " + width + " " + height);
+    svg.setAttribute("width", "100%");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", "プロジェクト別 今週の工数（棒グラフ）");
+    svg.classList.add("bars");
+    chartData.forEach((x, i) => {
+      const y = i * rowH + 2;
+      const bw = Math.max(2, Math.round(barMax * x.seconds / maxSec));
+      const name = document.createElementNS(NS, "text");
+      name.setAttribute("x", "0");
+      name.setAttribute("y", String(y + 14));
+      name.setAttribute("font-size", "12");
+      name.setAttribute("fill", "currentColor");
+      name.textContent = x.name;
+      const rect = document.createElementNS(NS, "rect");
+      rect.setAttribute("x", String(nameW));
+      rect.setAttribute("y", String(y + 3));
+      rect.setAttribute("width", String(bw));
+      rect.setAttribute("height", "14");
+      rect.setAttribute("fill", "#2456c8");
+      rect.classList.add("bar");
+      const val = document.createElementNS(NS, "text");
+      val.setAttribute("x", String(nameW + bw + 8));
+      val.setAttribute("y", String(y + 14));
+      val.setAttribute("font-size", "12");
+      val.setAttribute("fill", "currentColor");
+      val.textContent = ui.fmtHM(x.seconds);
+      svg.append(name, rect, val);
+    });
+    chartEl.appendChild(svg);
+  }
   dueList.sort((a, b) => a.task.due_date.localeCompare(b.task.due_date));
   $("dueCount").textContent = String(dueList.length);
   const dueBody = $("dueSoon");
@@ -724,11 +786,12 @@ uiRoutes.get("/app", async (c) => {
   <div class="card"><div class="muted">同期ステータス</div><div class="big" id="syncSeq">–</div><div class="muted" id="syncInfo"></div></div>
 </div>
 <h2>${t(locale, "dashboard.due_soon")}</h2>
-<table><thead><tr><th>タスク</th><th>プロジェクト</th><th>期限</th><th>ステータス</th></tr></thead><tbody id="dueSoon"></tbody></table>
+<table><thead><tr><th scope="col">タスク</th><th scope="col">プロジェクト</th><th scope="col">期限</th><th scope="col">ステータス</th></tr></thead><tbody id="dueSoon"></tbody></table>
 <h2>${t(locale, "dashboard.by_project")}</h2>
-<table><thead><tr><th>プロジェクト</th><th>タスク数</th><th>完了</th><th>進行中</th><th>今週の工数</th></tr></thead><tbody id="projSummary"></tbody></table>
+<div id="projChart"></div>
+<table><thead><tr><th scope="col">プロジェクト</th><th scope="col">タスク数</th><th scope="col">完了</th><th scope="col">進行中</th><th scope="col">今週の工数</th></tr></thead><tbody id="projSummary"></tbody></table>
 <h2>進行中のタスク</h2>
-<table><thead><tr><th>タスク</th><th>期限</th><th></th></tr></thead><tbody id="doing"></tbody></table>`;
+<table><thead><tr><th scope="col">タスク</th><th scope="col">期限</th><th scope="col"></th></tr></thead><tbody id="doing"></tbody></table>`;
   return c.html(
     appPage(prefs, "dashboard", t(locale, "dashboard.title"), `Kosu ${t(locale, "dashboard.title")}`, inner, DASHBOARD_SCRIPT),
   );
@@ -768,7 +831,7 @@ const TASKS_HTML = `
 <div class="split">
 <div>
 <p class="muted" id="taskCount"></p>
-<table><thead><tr><th>タスク</th><th>ステータス</th><th>優先度</th><th>担当</th><th>期限</th><th>ラベル</th></tr></thead><tbody id="taskRows"></tbody></table>
+<table><thead><tr><th scope="col">タスク</th><th scope="col">ステータス</th><th scope="col">優先度</th><th scope="col">担当</th><th scope="col">期限</th><th scope="col">ラベル</th></tr></thead><tbody id="taskRows"></tbody></table>
 </div>
 <div class="detail" id="detail" hidden>
 <h2 id="dTitle"></h2>
@@ -1103,7 +1166,7 @@ async function renderComments(t) {
     head.textContent = ui.memberName(cm.account_id) + " ・ " + new Date(cm.created_at).toLocaleString();
     const body = document.createElement("div");
     const text = await ui.decryptOrNull(cm.body_enc);
-    body.textContent = text === null ? "🔒 暗号化されています（ロック解除で表示）" : text;
+    body.textContent = text === null ? "暗号化されています（ロック解除で表示）" : text;
     body.style.whiteSpace = "pre-wrap";
     div.append(head, body);
     box.appendChild(div);
@@ -1413,7 +1476,7 @@ async function loadWeek() {
       td3.textContent = ui.fmtHMS(e.duration_seconds);
       if (e.long_running) {
         const s = document.createElement("span");
-        s.className = "warn"; s.textContent = " ⚠長時間";
+        s.className = "warn"; s.textContent = " 長時間";
         td3.appendChild(s);
       }
       const td4 = document.createElement("td");
@@ -1558,7 +1621,7 @@ const GANTT_HTML = `
 <p class="muted">プロジェクトは画面上部の切替で変更できます。期間はタスクとマイルストーンの日付から自動で決まります。<a id="standaloneLink" href="#">単体ページで開く</a></p>
 <div id="chart" style="overflow-x:auto"></div>
 <h2>マイルストーン</h2>
-<table><thead><tr><th>名前</th><th>日付</th></tr></thead><tbody id="milestoneRows"></tbody></table>`;
+<table><thead><tr><th scope="col">名前</th><th scope="col">日付</th></tr></thead><tbody id="milestoneRows"></tbody></table>`;
 
 const GANTT_SCRIPT = `
 const ui = window.KosuUI;
@@ -1607,7 +1670,7 @@ ui.onReady(async () => {
     el("text", { x: 4, y: y + 16, "font-size": 12 }, t.title.length > 24 ? t.title.slice(0, 24) + "…" : t.title);
     const s = t.start_date ? parseDay(t.start_date) : parseDay(t.due_date);
     const e = t.due_date ? parseDay(t.due_date) + DAY : s + DAY;
-    const color = t.status === "done" ? "#8a8" : t.status === "doing" ? "#2456c8" : "#99a";
+    const color = t.status === "done" ? "#3d9970" : t.status === "doing" ? "#2456c8" : "#99a";
     el("rect", { x: x(s), y: y + 5, width: Math.max(W, x(e) - x(s)), height: 14, rx: 3, fill: color });
     if (t.estimate_minutes) el("text", { x: x(e) + 4, y: y + 16, "font-size": 10, fill: "#667" }, "見積 " + t.estimate_minutes + "分");
   });
@@ -1693,9 +1756,9 @@ const REPORTS_HTML = `
   <a id="rPrint" href="#" target="_blank" rel="noopener">印刷・PDF 向け表示</a>
 </div>
 </form>
-<table><thead><tr><th>項目</th><th>件数</th><th>実績</th><th>丸め後</th><th>コスト</th></tr></thead>
+<table><thead><tr><th scope="col">項目</th><th scope="col">件数</th><th scope="col">実績</th><th scope="col">丸め後</th><th scope="col">コスト</th></tr></thead>
 <tbody id="reportRows"></tbody>
-<tfoot><tr><th>合計</th><th id="totEntries"></th><th id="totSeconds"></th><th id="totRounded"></th><th id="totCost"></th></tr></tfoot></table>
+<tfoot><tr><th scope="col">合計</th><th id="totEntries"></th><th id="totSeconds"></th><th id="totRounded"></th><th id="totCost"></th></tr></tfoot></table>
 <p class="muted">コストは単価設定があるメンバーの分だけ集計されます。期間は開始日基準です。</p>`;
 
 const REPORTS_SCRIPT = `
@@ -1829,7 +1892,7 @@ const SETTINGS_HTML = `
 <div id="vaultSlot"></div>
 <h2>API キー</h2>
 <p class="muted">MCP やスクリプトからの接続に使います。平文のキーは発行時に1回だけ表示します。</p>
-<table><thead><tr><th>名前</th><th>接頭辞</th><th>スコープ</th><th>作成</th><th>最終利用</th><th>状態</th><th></th></tr></thead><tbody id="keyRows"></tbody></table>
+<table><thead><tr><th scope="col">名前</th><th scope="col">接頭辞</th><th scope="col">スコープ</th><th scope="col">作成</th><th scope="col">最終利用</th><th scope="col">状態</th><th scope="col"></th></tr></thead><tbody id="keyRows"></tbody></table>
 <form id="keyForm">
 <div class="toolbar">
   <label>名前 <input type="text" id="kName" required size="24"></label>

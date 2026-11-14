@@ -6,6 +6,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261110.0",
     "typescript": "^5.7.2",
+    "vite": "^7.3.8",
     "vitest": "^5.0.0",
     "wrangler": "^4.0.0"
   },
@@ -21,5 +22,5 @@
     "typecheck": "tsc --noEmit"
   },
   "type": "module",
-  "version": "0.7.0"
+  "version": "0.8.0"
 }

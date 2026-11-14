@@ -16,7 +16,7 @@
  */
 import { Hono } from "hono";
 import { notFound } from "../errors";
-import { PALETTE_JS, PALETTE_URL, STYLE, STYLE_URL, shell, prefsFor } from "./pages";
+import { OFFLINE_JS, OFFLINE_URL, PALETTE_JS, PALETTE_URL, STYLE, STYLE_URL, shell, prefsFor } from "./pages";
 import { UI_ASSET_URL, UI_SCRIPT, VAULT_ASSET_URL, VAULT_PANEL_SCRIPT } from "./ui";
 import {
   countRecentSubmissions,
@@ -57,12 +57,17 @@ const MANIFEST = {
 const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="18" fill="#2456c8"/><text x="50" y="68" font-size="52" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-weight="700">K</text></svg>`;
 
 const SERVICE_WORKER = `
-// Kosu app shell service worker (phase 5).
-// Strategy: navigations are network-first with the cached shell as
-// fallback; static shell assets are cache-first. API responses are
-// never cached (they carry per-account data).
-const CACHE = "kosu-shell-v2";
-const SHELL_URLS = ["/app", "/manifest.webmanifest", "/icons/icon.svg", "${STYLE_URL}", "${PALETTE_URL}", "${UI_ASSET_URL}", "${VAULT_ASSET_URL}"];
+// Kosu service worker (phase 5 shell, phase 9 offline data).
+// Navigations: network-first with the cached shell as fallback.
+// Shell assets: cache-first. API GETs: network-first, successful
+// responses are stored in a per-browser data cache and served when
+// the network is down, so the app stays readable offline. Sensitive
+// or file-serving GETs are never cached, and the data cache is
+// purged on logout.
+const CACHE = "kosu-shell-v3";
+const DATA_CACHE = "kosu-data-v1";
+const SHELL_URLS = ["/app", "/manifest.webmanifest", "/icons/icon.svg", "${STYLE_URL}", "${PALETTE_URL}", "${UI_ASSET_URL}", "${VAULT_ASSET_URL}", "${OFFLINE_URL}"];
+const DATA_DENY = ["encryption-key", "/export", "/attachments/", "/sync/", "format=csv"];
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE).then((cache) => cache.addAll(SHELL_URLS)).then(() => self.skipWaiting())
@@ -70,12 +75,35 @@ self.addEventListener("install", (event) => {
 });
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())
+    caches.keys().then((keys) => Promise.all(keys.filter((k) => k.startsWith("kosu-shell-") && k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())
   );
 });
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
+  if (url.pathname === "/auth/logout") {
+    event.respondWith(
+      fetch(event.request).then((r) => caches.delete(DATA_CACHE).then(() => r))
+    );
+    return;
+  }
   if (event.request.method !== "GET") return;
+  if (url.pathname.startsWith("/api/v1/")) {
+    if (DATA_DENY.some((s) => (url.pathname + url.search).includes(s))) return;
+    event.respondWith(
+      fetch(event.request).then((r) => {
+        if (r.ok) {
+          const copy = r.clone();
+          caches.open(DATA_CACHE).then((cache) => cache.put(event.request, copy));
+        }
+        return r;
+      }).catch(() =>
+        caches.open(DATA_CACHE).then((cache) => cache.match(event.request)).then((hit) =>
+          hit || new Response(JSON.stringify({ error: { message: "offline and no cached data" } }), { status: 503, headers: { "content-type": "application/json" } })
+        )
+      )
+    );
+    return;
+  }
   if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/auth/")) return;
   if (event.request.mode === "navigate") {
     event.respondWith(
@@ -124,6 +152,7 @@ const ASSETS: Record<string, { body: string; type: string }> = {
   [PALETTE_URL]: { body: PALETTE_JS, type: "text/javascript; charset=utf-8" },
   [UI_ASSET_URL]: { body: UI_SCRIPT, type: "text/javascript; charset=utf-8" },
   [VAULT_ASSET_URL]: { body: VAULT_PANEL_SCRIPT, type: "text/javascript; charset=utf-8" },
+  [OFFLINE_URL]: { body: OFFLINE_JS, type: "text/javascript; charset=utf-8" },
 };
 
 public5Routes.get("/assets/:file", (c) => {

@@ -1262,10 +1262,43 @@ export async function findRunningEntry(
   return res.results.find((r) => r.ended_at === null) ?? null;
 }
 
+/**
+ * Offline-queued timer calls carry the moment the user actually
+ * pressed the button (phase 9). Accept a client timestamp only when
+ * it is close to reality: not in the future (beyond clock skew) and
+ * not older than a week.
+ */
+export function parseClientTimestamp(
+  value: unknown,
+  field: string,
+): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") {
+    throw badRequest(`"${field}" must be an ISO timestamp string`);
+  }
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) {
+    throw badRequest(`"${field}" must be an ISO timestamp string`);
+  }
+  const now = Date.now();
+  if (ms > now + 120_000) {
+    throw badRequest(`"${field}" must not be in the future`);
+  }
+  if (ms < now - 7 * 24 * 3600 * 1000) {
+    throw badRequest(`"${field}" is too old`);
+  }
+  return new Date(ms).toISOString();
+}
+
 export async function startTimer(
   env: Env,
   principal: Principal,
-  input: { tenantId: string; workspaceId: string; taskId: string | null },
+  input: {
+    tenantId: string;
+    workspaceId: string;
+    taskId: string | null;
+    startedAt?: string | null;
+  },
 ): Promise<TimeEntryRow> {
   const running = await findRunningEntry(
     env,
@@ -1285,7 +1318,7 @@ export async function startTimer(
       workspaceId: input.workspaceId,
       taskId: input.taskId,
       accountId: principal.accountId,
-      startedAt: nowIso(),
+      startedAt: input.startedAt ?? nowIso(),
       endedAt: null,
       durationSeconds: null,
       noteEnc: null,
@@ -1298,14 +1331,19 @@ export async function stopTimer(
   env: Env,
   principal: Principal,
   tenantId: string,
+  endedAt?: string | null,
 ): Promise<TimeEntryRow> {
   const running = await findRunningEntry(env, tenantId, principal.accountId);
   if (!running) throw conflict("TIMER_NOT_RUNNING", "No timer is running");
   const now = nowIso();
-  const duration = secondsBetween(running.started_at, now);
+  const end = endedAt ?? now;
+  if (Date.parse(end) < Date.parse(running.started_at)) {
+    throw badRequest('"client_stopped_at" is before the timer start');
+  }
+  const duration = secondsBetween(running.started_at, end);
   const next: TimeEntryRow = {
     ...running,
-    ended_at: now,
+    ended_at: end,
     duration_seconds: duration,
     long_running: duration > LONG_RUNNING_THRESHOLD_SECONDS ? 1 : 0,
     version: Number(running.version) + 1,

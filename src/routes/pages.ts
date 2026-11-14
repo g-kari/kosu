@@ -303,6 +303,158 @@ export const PALETTE_JS = `
 /** Command palette script, served as a cacheable external asset (phase 8). */
 export const PALETTE_URL = assetUrl("palette", "js", PALETTE_JS);
 
+/**
+ * Offline support (phase 9): wraps window.fetch on app pages.
+ * Mutations to /api/v1/ made while the network is down are stored in
+ * an IndexedDB outbox and replayed in order when connectivity
+ * returns; a small status bar explains the state. Timer start/stop
+ * are stamped with the client-side moment so queued calls keep the
+ * real times. One-shot secret responses (API keys, tokens, the
+ * encryption key) are never queued: they fail fast instead.
+ */
+export const OFFLINE_JS = `
+(function () {
+  if (window.__kosuOffline) return;
+  window.__kosuOffline = true;
+  var rawFetch = window.fetch.bind(window);
+  var EXCLUDED = ["api-keys", "encryption-key", "/export", "share-tokens", "intake-tokens", "ical-feeds", "/tokens"];
+  function excluded(url) { return EXCLUDED.some(function (s) { return url.indexOf(s) >= 0; }); }
+
+  /* ---------------- IndexedDB outbox ---------------- */
+  function openDb() {
+    return new Promise(function (resolve, reject) {
+      var req = indexedDB.open("kosu-offline", 1);
+      req.onupgradeneeded = function () { req.result.createObjectStore("outbox", { autoIncrement: true }); };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+    });
+  }
+  function tx(mode, fn) {
+    return openDb().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var t = db.transaction("outbox", mode);
+        var store = t.objectStore("outbox");
+        var out = fn(store);
+        t.oncomplete = function () { resolve(out && out.__result); };
+        t.onerror = function () { reject(t.error); };
+      });
+    });
+  }
+  function enqueue(item) {
+    return tx("readwrite", function (store) { store.add(item); }).then(refreshBar);
+  }
+  function allItems() {
+    return openDb().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var items = [];
+        var t = db.transaction("outbox", "readonly");
+        var req = t.objectStore("outbox").openCursor();
+        req.onsuccess = function () {
+          var cur = req.result;
+          if (cur) { items.push({ key: cur.key, value: cur.value }); cur.continue(); }
+          else resolve(items);
+        };
+        req.onerror = function () { reject(req.error); };
+      });
+    });
+  }
+  function removeItem(key) {
+    return tx("readwrite", function (store) { store.delete(key); });
+  }
+  function countItems() { return allItems().then(function (i) { return i.length; }); }
+
+  /* ---------------- status bar ---------------- */
+  var dropped = 0;
+  function bar() {
+    var el = document.getElementById("kosuOfflineBar");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "kosuOfflineBar";
+      el.setAttribute("role", "status");
+      el.style.cssText = "position:fixed;left:12px;bottom:12px;z-index:60;background:#ffffff;color:#1a1a2e;border:1px solid #2456c8;border-left:4px solid #2456c8;padding:8px 12px;font-size:13px;max-width:82vw;display:none";
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+  function refreshBar() {
+    return countItems().then(function (n) {
+      var el = bar();
+      var parts = [];
+      if (!navigator.onLine) parts.push("オフラインです。前回取得したデータを表示しています。");
+      if (n > 0) parts.push("未送信の変更が " + n + " 件あります。オンラインに戻ると自動で送信します。");
+      if (dropped > 0) parts.push("送信できなかった変更が " + dropped + " 件あります（権限や競合で却下）。");
+      el.textContent = parts.join(" ");
+      el.style.display = parts.length ? "" : "none";
+    }).catch(function () {});
+  }
+
+  /* ---------------- fetch wrapper ---------------- */
+  function isApiMutation(input, init) {
+    var url = typeof input === "string" ? input : input.url;
+    var method = ((init && init.method) || (typeof input !== "string" && input.method) || "GET").toUpperCase();
+    if (method === "GET" || method === "HEAD") return null;
+    var u = new URL(url, location.origin);
+    if (u.origin !== location.origin) return null;
+    if (!u.pathname.startsWith("/api/v1/")) return null;
+    if (excluded(u.pathname)) return null;
+    return { url: u.pathname + u.search, method: method };
+  }
+  window.fetch = function (input, init) {
+    var meta = isApiMutation(input, init || {});
+    if (!meta) return rawFetch(input, init);
+    return rawFetch(input, init).catch(function (err) {
+      var body = init && init.body !== undefined && init.body !== null ? init.body : "";
+      if (typeof body !== "string") throw err; // uploads etc. are not queued
+      var stamped = body;
+      try {
+        var parsed = JSON.parse(body || "{}");
+        if (meta.url.indexOf("/timer/start") >= 0 && !parsed.client_started_at) parsed.client_started_at = new Date().toISOString();
+        if (meta.url.indexOf("/timer/stop") >= 0 && !parsed.client_stopped_at) parsed.client_stopped_at = new Date().toISOString();
+        stamped = JSON.stringify(parsed);
+      } catch (e) { /* not JSON: queue as-is */ }
+      return enqueue({ url: meta.url, method: meta.method, body: stamped, queuedAt: new Date().toISOString() }).then(function () {
+        return new Response(JSON.stringify({ queued: true, offline: true }), {
+          status: 202,
+          headers: { "content-type": "application/json" },
+        });
+      });
+    });
+  };
+
+  /* ---------------- flush ---------------- */
+  var flushing = false;
+  function flush() {
+    if (flushing || !navigator.onLine) return;
+    flushing = true;
+    allItems().then(function (items) {
+      var chain = Promise.resolve();
+      items.forEach(function (item) {
+        chain = chain.then(function () {
+          var opts = { method: item.value.method };
+          if (item.value.body) {
+            opts.headers = { "content-type": "application/json" };
+            opts.body = item.value.body;
+          }
+          return rawFetch(item.value.url, opts).then(function (r) {
+            if (r.ok) return removeItem(item.key);
+            if (r.status >= 400 && r.status < 500) { dropped++; return removeItem(item.key); }
+            throw new Error("retry later");
+          });
+        });
+      });
+      return chain;
+    }).catch(function () { /* keep the rest for the next flush */ })
+      .then(function () { flushing = false; refreshBar(); });
+  }
+  window.addEventListener("online", function () { refreshBar(); flush(); });
+  window.addEventListener("offline", refreshBar);
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", function () { refreshBar(); flush(); });
+  else { refreshBar(); flush(); }
+  setInterval(function () { if (navigator.onLine) flush(); }, 60000);
+})();
+`;
+export const OFFLINE_URL = assetUrl("offline", "js", OFFLINE_JS);
+
 export async function sessionAccountId(c: Ctx): Promise<string | null> {
   return readSessionAccountId(
     c.env,

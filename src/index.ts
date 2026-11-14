@@ -15,6 +15,7 @@ import { public5Routes } from "./routes/public5";
 import { publicInRoutes } from "./routes/public-in";
 import { syncRoutes } from "./routes/sync";
 import { taskRoutes } from "./routes/tasks";
+import { SERVICE_IDENTITY, uiRoutes } from "./routes/ui";
 import { workRoutes } from "./routes/work";
 import type { Env, Variables } from "./types";
 
@@ -22,16 +23,12 @@ export type { Env } from "./types";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-app.get("/", (c) =>
-  c.json({
-    name: "Kosu",
-    service: "kosu",
-    status: "ok",
-    version: "0.6.0",
-  }),
-);
-
-app.get("/health", (c) => c.json({ status: "ok" }));
+// Phase 6: `/` is the HTML landing page (see routes/ui.ts; JSON only
+// when the client asks for application/json only). The service
+// identity JSON that used to live at `/` is served unconditionally
+// at /health and /api/health.
+app.get("/health", (c) => c.json(SERVICE_IDENTITY));
+app.get("/api/health", (c) => c.json(SERVICE_IDENTITY));
 
 app.route("/", authRoutes);
 app.route("/", apiRoutes);
@@ -45,6 +42,9 @@ app.route("/", mcpRoutes);
 app.route("/", publicInRoutes);
 app.route("/", phase5Routes);
 app.route("/", public5Routes);
+// The phase 6 UI owns `/` and `/app`; it must be registered before
+// pageRoutes so its dashboard wins over the legacy one.
+app.route("/", uiRoutes);
 app.route("/", pageRoutes);
 
 app.notFound((c) =>

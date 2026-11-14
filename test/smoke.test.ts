@@ -11,18 +11,45 @@ const TEST_KEY = Buffer.alloc(32, 7).toString("base64");
 const WRONG_KEY = Buffer.alloc(32, 9).toString("base64");
 
 describe("app", () => {
-  it("GET / returns the service identity", async () => {
-    const res = await app.request("/");
+  it("GET / returns the HTML landing page for browsers", async () => {
+    const res = await app.request("/", {
+      headers: { accept: "text/html,application/xhtml+xml" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const html = await res.text();
+    expect(html).toContain("Kosu");
+    expect(html).toContain("/auth/login");
+  });
+
+  it("GET / still returns the service identity JSON when asked", async () => {
+    const res = await app.request("/", {
+      headers: { accept: "application/json" },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      name: string;
+      status: string;
+      version: string;
+    };
+    expect(body.name).toBe("Kosu");
+    expect(body.status).toBe("ok");
+    expect(body.version).toBe("0.7.0");
+  });
+
+  it("GET /health returns ok with the service identity", async () => {
+    const res = await app.request("/health");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; version: string };
+    expect(body.status).toBe("ok");
+    expect(body.version).toBe("0.7.0");
+  });
+
+  it("GET /api/health returns the service identity", async () => {
+    const res = await app.request("/api/health");
     expect(res.status).toBe(200);
     const body = (await res.json()) as { name: string; status: string };
     expect(body.name).toBe("Kosu");
-    expect(body.status).toBe("ok");
-  });
-
-  it("GET /health returns ok", async () => {
-    const res = await app.request("/health");
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { status: string };
     expect(body.status).toBe("ok");
   });
 });

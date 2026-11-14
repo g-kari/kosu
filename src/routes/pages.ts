@@ -1,10 +1,16 @@
 /**
- * Minimal server-rendered pages (phase 2). Data is loaded client-side
- * from the JSON API so the pages double as living API documentation.
- * No external assets; rendering is plain HTML/CSS/SVG.
+ * Server-rendered pages. Data is loaded client-side from the JSON API
+ * so the pages double as living API documentation. No external assets;
+ * rendering is plain HTML/CSS/SVG. This module owns the shared shell
+ * (styles, command palette, theme/locale handling) and the phase 2-5
+ * pages; the phase 6 Web UI (landing, dashboard, tasks, time, gantt,
+ * reports, settings) lives in src/routes/ui.ts.
  *
- *   GET /app                              dashboard
- *   GET /app/projects/:projectId/gantt    Gantt chart
+ *   GET /app/projects/:projectId/gantt    Gantt chart (standalone)
+ *   GET /app/conflicts                    sync conflict resolution
+ *   GET /app/settings/integrations        integration settings
+ *   GET /app/preferences                  display preferences
+ *   GET /app/onboarding                   getting-started wizard
  *   GET /invite/:token                    invite landing / accept
  */
 import { Hono } from "hono";
@@ -16,7 +22,7 @@ import type { Ctx } from "./http";
 
 export const pageRoutes = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-function jsonForScript(value: unknown): string {
+export function jsonForScript(value: unknown): string {
   return JSON.stringify(value).replace(/</g, "\\u003c");
 }
 
@@ -30,6 +36,14 @@ ${root} a { color: #8fb0ff; }
 ${root} button.secondary { background: #26263a; color: #8fb0ff; }
 ${root} input, ${root} select, ${root} textarea { background: #1d1d2a; color: #e9e9f2; border: 1px solid #3a3a4f; }
 ${root} #palette { background: #1d1d2a; color: #e9e9f2; border-color: #3a3a4f; }
+${root} .topbar, ${root} .detail { border-color: #3a3a4f; }
+${root} .sidebar nav a:hover { background: #26263a; }
+${root} .sidebar nav a.active { background: #2456c8; color: #fff; }
+${root} .tag { border-color: #3a3a4f; }
+${root} .chip { background: #26263a; color: #8fb0ff; }
+${root} .timer-chip { background: #1d2a4a; border-color: #35507e; }
+${root} .comment { border-bottom-color: #33334a; }
+${root} .dayhead { border-bottom-color: #3a3a4f; }
 `;
 
 const STYLE = `
@@ -59,12 +73,56 @@ a { color: #2456c8; }
 #palette ul { list-style: none; margin: .5rem 0 0; padding: 0; max-height: 320px; overflow: auto; }
 #palette li { padding: .45rem .5rem; border-radius: 6px; cursor: pointer; }
 #palette li[aria-selected="true"] { background: #2456c8; color: #fff; }
+/* Phase 6 app layout (sidebar shell used by src/routes/ui.ts) */
+.layout { display: flex; gap: 1.5rem; align-items: flex-start; }
+.sidebar { width: 190px; flex: none; position: sticky; top: 1rem; }
+.sidebar .brand { font-size: 1.25rem; font-weight: 700; margin-bottom: .75rem; }
+.sidebar nav a { display: block; padding: .45rem .6rem; border-radius: 6px; text-decoration: none; color: inherit; }
+.sidebar nav a:hover { background: #eef1f8; }
+.sidebar nav a.active { background: #2456c8; color: #fff; }
+.sidebar .side-sec { margin-top: 1.25rem; }
+.content { flex: 1; min-width: 0; }
+.content h1:first-child { margin-top: 0; }
+.topbar { display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: center; border: 1px solid #ccd; border-radius: 8px; padding: .6rem .8rem; margin-bottom: 1.25rem; }
+.topbar select { max-width: 190px; }
+.topbar .spacer { flex: 1; }
+.timer-chip { display: inline-flex; gap: .5rem; align-items: center; background: #eef4ff; border: 1px solid #b9cdf5; border-radius: 999px; padding: .3rem .4rem .3rem .8rem; font-variant-numeric: tabular-nums; }
+.timer-chip button { padding: .25rem .7rem; border-radius: 999px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: .6rem; align-items: flex-end; margin: 1rem 0; }
+.toolbar label { display: flex; flex-direction: column; gap: .25rem; font-size: .82rem; }
+.tag { display: inline-block; border: 1px solid #ccd; border-left: 6px solid #99a; border-radius: 4px; padding: .05rem .45rem; font-size: .78rem; margin-right: .3rem; }
+.chip { display: inline-block; border-radius: 999px; padding: .05rem .55rem; font-size: .78rem; background: #eef; color: #2456c8; }
+.due-over { color: #b00020; font-weight: 600; }
+.due-soon { color: #b3541e; font-weight: 600; }
+.split { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 1.5rem; align-items: start; }
+.detail { border: 1px solid #ccd; border-radius: 8px; padding: 1rem 1.25rem; }
+.detail h2 { margin-top: 0; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem 1rem; }
+.form-grid label { display: flex; flex-direction: column; gap: .25rem; font-size: .85rem; }
+.form-grid .full { grid-column: 1 / -1; }
+textarea { width: 100%; box-sizing: border-box; }
+input[type="date"], input[type="time"], input[type="text"], input[type="number"], input[type="password"], select { padding: .35rem .45rem; }
+.comment { border-bottom: 1px solid #e3e3ee; padding: .5rem 0; }
+.dayhead { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #ccd; padding-bottom: .25rem; margin-top: 1.5rem; }
+.kv { display: grid; grid-template-columns: 150px 1fr; gap: .3rem .8rem; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td { background: #f4f6fd; }
+@media (max-width: 860px) {
+  .layout { flex-direction: column; }
+  .sidebar { width: 100%; position: static; }
+  .sidebar nav { display: flex; flex-wrap: wrap; gap: .25rem; }
+  .sidebar nav a { display: inline-block; }
+  .split { grid-template-columns: 1fr; }
+  .form-grid { grid-template-columns: 1fr; }
+}
 `;
 
 export interface ShellOptions {
   prefs?: UserPrefs | null;
   /** Include the command palette + service worker (app pages). */
   appChrome?: boolean;
+  /** Widen the content column (phase 6 app layout). */
+  wide?: boolean;
 }
 
 export function shell(
@@ -93,7 +151,7 @@ export function shell(
 <meta name="theme-color" content="#2456c8">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
-<title>${title} — Kosu</title><style>${STYLE}</style></head>
+<title>${title} — Kosu</title><style>${STYLE}</style>${opts.wide ? "<style>body { max-width: 1320px; }</style>" : ""}</head>
 <body><a class="skip" href="#main">本文へ移動</a><main id="main">${body}</main>${palette}<script>${script}</script>${chrome}${sw}</body></html>`;
 }
 
@@ -223,100 +281,6 @@ export async function prefsFor(c: Ctx): Promise<UserPrefs | null> {
   if (!accountId) return null;
   return getUserPrefs(c.env, accountId);
 }
-
-pageRoutes.get("/app", async (c) => {
-  const prefs = await prefsFor(c);
-  if (!prefs) return c.redirect("/auth/login", 302);
-  const locale = prefs.locale;
-  const weekDayKey = `weekday.${prefs.week_start}` as MessageKey;
-  const weekLabel =
-    locale === "en"
-      ? "This week's time"
-      : `今週の工数（${t(locale, weekDayKey)}始まり）`;
-  const body = `
-<h1>Kosu ${t(locale, "dashboard.title")}</h1>
-<p class="muted" id="who"></p>
-<div class="cards">
-  <div class="card"><div class="muted">${locale === "en" ? "Today's time" : "今日の工数"}</div><div class="big" id="today">–</div><div class="muted" id="todayRaw"></div></div>
-  <div class="card"><div class="muted">${weekLabel}</div><div class="big" id="week">–</div><div class="muted" id="weekRaw"></div></div>
-  <div class="card"><div class="muted">同期ステータス</div><div class="big" id="syncSeq">–</div><div class="muted" id="syncInfo"></div></div>
-</div>
-<p><a href="/app/settings/integrations">外部連携・MCP の設定</a> ／ <a href="/app/preferences">${t(locale, "nav.preferences")}</a> ／ <a href="/app/onboarding">${t(locale, "nav.onboarding")}</a> ／ <a href="/terms">${t(locale, "nav.terms")}</a></p>
-<h2>実行中のタイマー</h2>
-<div id="running"><p class="muted">なし</p></div>
-<h2>進行中のタスク</h2>
-<table><thead><tr><th>タスク</th><th>期限</th><th></th></tr></thead><tbody id="doing"></tbody></table>
-<p id="msg" class="err"></p>`;
-  const script = `
-const $ = (id) => document.getElementById(id);
-const fmt = (s) => { s = Math.max(0, Math.round(s)); const h = Math.floor(s/3600), m = Math.floor((s%3600)/60); return h + "時間" + String(m).padStart(2,"0") + "分"; };
-async function api(path, opts) {
-  const r = await fetch(path, opts);
-  if (!r.ok) { const t = await r.text(); throw new Error(r.status + " " + t); }
-  return r.json();
-}
-(async () => {
-  try {
-    const me = await api("/api/v1/me");
-    const tenantId = me.account.default_tenant_id || (me.tenants[0] && me.tenants[0].id);
-    $("who").textContent = (me.account.display_name || me.account.email || "") + " さん";
-    const now = new Date();
-    const date = now.getFullYear() + "-" + String(now.getMonth()+1).padStart(2,"0") + "-" + String(now.getDate()).padStart(2,"0");
-    const tz = -now.getTimezoneOffset();
-    const d = await api("/api/v1/tenants/" + tenantId + "/dashboard?date=" + date + "&tz=" + tz);
-    $("today").textContent = fmt(d.today.rounded_seconds);
-    $("todayRaw").textContent = "実測 " + fmt(d.today.seconds) + "（丸め適用後を表示）";
-    $("week").textContent = fmt(d.week.rounded_seconds);
-    $("weekRaw").textContent = "実測 " + fmt(d.week.seconds);
-    if (d.running_entry) {
-      const e = d.running_entry;
-      $("running").innerHTML = "";
-      const p = document.createElement("p");
-      p.textContent = "開始 " + new Date(e.started_at).toLocaleTimeString() + " / 経過 " + fmt(e.duration_seconds || 0);
-      if (e.long_running) { const s = document.createElement("span"); s.className = "warn"; s.textContent = " ⚠ 12時間を超えています。止め忘れていませんか？"; p.appendChild(s); }
-      $("running").appendChild(p);
-      const b = document.createElement("button");
-      b.textContent = "タイマーを止める";
-      b.onclick = async () => { await api("/api/v1/tenants/" + tenantId + "/timer/stop", { method: "POST" }); location.reload(); };
-      $("running").appendChild(b);
-    }
-    const tbody = $("doing");
-    for (const t of d.doing_tasks) {
-      const tr = document.createElement("tr");
-      const td1 = document.createElement("td"); td1.textContent = t.title;
-      const td2 = document.createElement("td"); td2.textContent = t.due_date || "";
-      const td3 = document.createElement("td");
-      if (t.project_id) { const a = document.createElement("a"); a.href = "/app/projects/" + t.project_id + "/gantt"; a.textContent = "ガント"; td3.appendChild(a); }
-      tr.append(td1, td2, td3); tbody.appendChild(tr);
-    }
-    if (d.doing_tasks.length === 0) { const tr = document.createElement("tr"); const td = document.createElement("td"); td.colSpan = 3; td.className = "muted"; td.textContent = "進行中のタスクはありません"; tr.appendChild(td); tbody.appendChild(tr); }
-    // Sync status: register this browser as a device once, then poll status.
-    let deviceId = localStorage.getItem("kosu_device_id");
-    if (!deviceId) {
-      const reg = await api("/api/v1/sync/devices", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Web ブラウザ", platform: navigator.platform || "web" }) });
-      deviceId = reg.device.id;
-      localStorage.setItem("kosu_device_id", deviceId);
-    }
-    const st = await api("/api/v1/tenants/" + tenantId + "/sync/status?device_id=" + encodeURIComponent(deviceId));
-    $("syncSeq").textContent = "seq " + st.last_seq;
-    $("syncInfo").textContent = "競合 " + st.open_conflicts + " 件 / 端末 " + st.devices.length + " 台";
-    if (st.open_conflicts > 0) {
-      $("syncInfo").className = "warn";
-      const a = document.createElement("a");
-      a.href = "/app/conflicts";
-      a.textContent = "競合を確認する";
-      a.style.display = "block";
-      $("syncInfo").appendChild(a);
-    }
-  } catch (err) {
-    $("msg").textContent = "読み込みに失敗しました: " + err.message;
-  }
-})();
-`;
-  return c.html(
-    shell("ダッシュボード", body, script, { prefs, appChrome: true }),
-  );
-});
 
 pageRoutes.get("/app/projects/:projectId/gantt", async (c) => {
   if (!(await loggedIn(c))) return c.redirect("/auth/login", 302);

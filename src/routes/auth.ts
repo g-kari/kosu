@@ -189,3 +189,58 @@ authRoutes.get("/me", async (c) => {
     auth: { kind: principal.kind },
   });
 });
+
+/**
+ * The caller's profile plus the tenants they belong to (phase 6).
+ * The Web UI (and the phase 2-5 pages before it) bootstrap their
+ * tenant context from this endpoint: `default_tenant_id` is the
+ * personal tenant when one exists, otherwise the first membership.
+ * Internal account ids only — never the sub.
+ */
+authRoutes.get("/api/v1/me", async (c) => {
+  const principal = await requirePrincipal(c);
+  const account = await accountById(c.env, principal.accountId);
+  if (!account) {
+    throw badRequest("Account no longer exists");
+  }
+  // Two-step lookup (no JOIN) so the test double and D1 agree.
+  const { results: memberships } = await c.env.DB.prepare(
+    "SELECT tenant_id, role FROM tenant_members WHERE account_id = ?1",
+  )
+    .bind(principal.accountId)
+    .all<{ tenant_id: string; role: string }>();
+  const tenants: Array<{
+    id: string;
+    name: string;
+    kind: string;
+    role: string;
+    created_at: string;
+  }> = [];
+  for (const m of memberships ?? []) {
+    const tenant = await c.env.DB.prepare(
+      "SELECT id, name, kind, created_at FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+    )
+      .bind(m.tenant_id)
+      .first<{ id: string; name: string; kind: string; created_at: string }>();
+    if (tenant) tenants.push({ ...tenant, role: m.role });
+  }
+  tenants.sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const personal = tenants.find((t) => t.kind === "personal");
+  const defaultTenantId = personal?.id ?? tenants[0]?.id ?? null;
+  return c.json({
+    account: {
+      id: account.id,
+      display_name: account.display_name,
+      email: account.email,
+      created_at: account.created_at,
+      default_tenant_id: defaultTenantId,
+    },
+    tenants: tenants.map((x) => ({
+      id: x.id,
+      name: x.name,
+      kind: x.kind,
+      role: x.role,
+    })),
+    auth: { kind: principal.kind },
+  });
+});

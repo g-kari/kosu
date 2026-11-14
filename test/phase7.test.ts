@@ -2,6 +2,26 @@ import { describe, expect, it } from "vitest";
 import { FakeDb } from "./fake-db";
 import { call, setupOwner } from "./phase2-helpers";
 
+function channel(c: number): number {
+  const s = c / 255;
+  return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+}
+function luminance(hex: string): number {
+  const h = hex.replace("#", "");
+  const full = h.length === 3 ? h.split("").map((ch) => ch + ch).join("") : h;
+  const r = parseInt(full.slice(0, 2), 16);
+  const g = parseInt(full.slice(2, 4), 16);
+  const b = parseInt(full.slice(4, 6), 16);
+  return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+}
+function contrast(a: string, b: string): number {
+  const l1 = luminance(a);
+  const l2 = luminance(b);
+  const hi = Math.max(l1, l2);
+  const lo = Math.min(l1, l2);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 /**
  * Phase 7: modern-web compliance (CSP with per-request nonces,
  * prefers-reduced-motion, landmarks) and the design rules shared with
@@ -72,6 +92,31 @@ describe("phase 7 web compliance + design rules", () => {
     const tasksHtml = await tasks.text();
     for (const emoji of ["🔒", "⏱", "⚠"]) {
       expect(tasksHtml).not.toContain(emoji);
+    }
+  });
+
+  it("graphical colors meet the 3:1 non-text contrast ratio (numeric audit)", async () => {
+    // Same dynamic-specifier pattern as schema.test.ts: the tsconfig only
+    // carries Workers types, so node builtins are loaded indirectly.
+    const fs = (await import("node:" + "fs")) as {
+      readFileSync: (p: string, enc: string) => string;
+    };
+    const pages = fs.readFileSync("src/routes/pages.ts", "utf8");
+    const ui = fs.readFileSync("src/routes/ui.ts", "utf8");
+    // Focus indicator: at least 3:1 on both the light and dark backgrounds.
+    const focus = /:focus-visible \{ outline: 3px solid (#[0-9a-f]{6})/.exec(pages);
+    expect(focus).toBeTruthy();
+    const focusColor = (focus as RegExpExecArray)[1]!;
+    expect(contrast(focusColor, "#ffffff")).toBeGreaterThanOrEqual(3);
+    expect(contrast(focusColor, "#14141c")).toBeGreaterThanOrEqual(3);
+    // Gantt "todo" bar and milestone diamond in both renderers.
+    for (const src of [pages, ui]) {
+      const bar = /"#2456c8" : "(#[0-9a-f]{6})"/.exec(src);
+      expect(bar).toBeTruthy();
+      expect(contrast((bar as RegExpExecArray)[1]!, "#ffffff")).toBeGreaterThanOrEqual(3);
+      const ms = /fill: "(#[0-9a-f]{6})" \}\);/.exec(src);
+      expect(ms).toBeTruthy();
+      expect(contrast((ms as RegExpExecArray)[1]!, "#ffffff")).toBeGreaterThanOrEqual(3);
     }
   });
 });

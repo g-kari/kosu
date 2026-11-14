@@ -203,6 +203,74 @@ public5Routes.get("/privacy", async (c) => {
 });
 
 /* ------------------------------------------------------------------ */
+/* Design system style guide (phase 11). Renders the real components   */
+/* with the app's own stylesheet; the spec is docs/DESIGN_SYSTEM.md.   */
+/* ------------------------------------------------------------------ */
+
+const swatch = (hex: string) =>
+  `<svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><rect x="1" y="1" width="32" height="32" fill="${hex}" stroke="#999" stroke-width="1"/></svg>`;
+
+const DESIGN_SYSTEM_BODY = `
+<h1>デザインシステム</h1>
+<p class="muted">Kosu の画面はこのページの部品とトークンだけで組み立てる。仕様の正は docs/DESIGN_SYSTEM.md、実装の正はこのページ（実物のCSSで描画）。</p>
+<h2>原則（6ルール）</h2>
+<p>カードにしない（区切りは上端の罫）／パステルカラーを使わない／ポエム調の文言を使わない／絵文字を使わない／アニメーションを付ける／図解を中心にする。</p>
+<h2>カラートークン</h2>
+<table>
+<tr><th>見本</th><th>トークン</th><th>値（ライト）</th><th>役割</th></tr>
+<tr><td>${swatch("#2456c8")}</td><td>--brand</td><td>#2456c8</td><td>主要操作・リンク・進行中</td></tr>
+<tr><td>${swatch("#1a1a2e")}</td><td>--ink</td><td>#1a1a2e</td><td>本文</td></tr>
+<tr><td>${swatch("#666677")}</td><td>--muted</td><td>#666677</td><td>補足テキスト</td></tr>
+<tr><td>${swatch("#e3e3ee")}</td><td>--line</td><td>#e3e3ee</td><td>罫線</td></tr>
+<tr><td>${swatch("#b00020")}</td><td>--danger</td><td>#b00020</td><td>エラー・期限超過</td></tr>
+<tr><td>${swatch("#b3541e")}</td><td>--warn</td><td>#b3541e</td><td>注意・期限間近</td></tr>
+<tr><td>${swatch("#3d9970")}</td><td>--ok</td><td>#3d9970</td><td>完了</td></tr>
+<tr><td>${swatch("#c96a00")}</td><td>--focus</td><td>#c96a00</td><td>キーボードフォーカスの枠</td></tr>
+</table>
+<p class="muted">ダークテーマでは --brand #8fb0ff、--ink #e9e9f2、--bg #14141c などに切り替わる（darkTokens）。テキストのコントラストは両テーマとも WCAG AA（4.5:1）以上、図形は 3:1 以上を数値監査で確認済み。</p>
+<h2>ガントの色</h2>
+<table>
+<tr><th>見本</th><th>状態</th><th>値</th></tr>
+<tr><td>${swatch("#7a7a8c")}</td><td>未着手</td><td>#7a7a8c</td></tr>
+<tr><td>${swatch("#2456c8")}</td><td>進行中</td><td>#2456c8</td></tr>
+<tr><td>${swatch("#3d9970")}</td><td>完了</td><td>#3d9970</td></tr>
+<tr><td>${swatch("#b97a1e")}</td><td>マイルストーン（菱形）</td><td>#b97a1e</td></tr>
+</table>
+<h2>文字</h2>
+<h1 style="margin:.2rem 0">見出し1（1.4rem）</h1>
+<h2 style="margin:.2rem 0">見出し2（1.1rem）</h2>
+<p>本文は system-ui、16px 相当。数値は tabular-nums で桁を揃える：<span style="font-variant-numeric:tabular-nums">12:34:56 / 1,234.5 h</span></p>
+<p class="muted">補足テキスト（.muted、0.85rem）</p>
+<h2>ボタン</h2>
+<p>
+<button type="button">作成する</button>
+<button type="button" class="secondary">絞り込む</button>
+<button type="button" disabled>保存（無効）</button>
+<span class="chip">チップ</span>
+<span class="tag">タグ</span>
+</p>
+<p class="muted">角丸はボタン・入力が 6px（--radius-control）、チップとタグが 4px（--radius-chip）。モバイルでは高さ44pxを確保する。無効は disabled 属性で表し、色だけに頼らない。</p>
+<h2>入力</h2>
+<p>
+<label>テキスト <input type="text" value="サンプル"></label>
+<label>選択 <select><option>選択肢A</option><option>選択肢B</option></select></label>
+<label>日付 <input type="date" value="2026-11-15"></label>
+</p>
+<h2>フィードバック</h2>
+<div class="toast static" role="status">トーストの見本：保存しました</div>
+<p class="muted">処理中は画面上部に読み込みバー（#busybar）が出る。アニメーションは prefers-reduced-motion で止まる。</p>
+<h2>ロゴ</h2>
+<p><img src="/icons/icon.svg" width="48" height="48" alt="現在のアイコン"> 現在のアイコン。新しいロゴ候補は選定中。</p>
+<p><a href="/">トップへ戻る</a></p>
+`;
+
+public5Routes.get("/design-system", async (c) => {
+  const prefs = await prefsFor(c);
+  c.header("Cache-Control", "no-store");
+  return c.html(shell("デザインシステム", DESIGN_SYSTEM_BODY, "", { prefs }));
+});
+
+/* ------------------------------------------------------------------ */
 /* Public share page                                                    */
 /* ------------------------------------------------------------------ */
 

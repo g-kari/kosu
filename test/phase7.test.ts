@@ -117,9 +117,13 @@ describe("phase 7 web compliance + design rules", () => {
     const pages = fs.readFileSync("src/routes/pages.ts", "utf8");
     const ui = fs.readFileSync("src/routes/ui.ts", "utf8");
     // Focus indicator: at least 3:1 on both the light and dark backgrounds.
-    const focus = /:focus-visible \{ outline: 3px solid (#[0-9a-f]{6})/.exec(pages);
+    const focus = /:focus-visible \{ outline: 3px solid (#[0-9a-f]{6}|var\(--focus\))/.exec(pages);
     expect(focus).toBeTruthy();
-    const focusColor = (focus as RegExpExecArray)[1]!;
+    // Phase 11: the rule references the --focus design token; resolve it.
+    const focusRaw = (focus as RegExpExecArray)[1]!;
+    const focusColor = focusRaw.startsWith("var")
+      ? (/--focus: (#[0-9a-f]{6})/.exec(pages) as RegExpExecArray)[1]!
+      : focusRaw;
     expect(contrast(focusColor, "#ffffff")).toBeGreaterThanOrEqual(3);
     expect(contrast(focusColor, "#14141c")).toBeGreaterThanOrEqual(3);
     // Gantt "todo" bar and milestone diamond in both renderers.

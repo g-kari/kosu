@@ -1,27 +1,43 @@
 import { Hono } from "hono";
+import { ApiError } from "./errors";
+import { apiRoutes } from "./routes/api";
+import { authRoutes } from "./routes/auth";
+import type { Env, Variables } from "./types";
 
-/** Worker bindings (see wrangler.toml). */
-export interface Env {
-  DB: D1Database;
-  FILES: R2Bucket;
-  APP_ORIGIN?: string;
-  OIDC_ISSUER?: string;
-  /** Base64-encoded 32-byte key for AES-GCM field encryption (Worker secret). */
-  FIELD_ENCRYPTION_KEY?: string;
-  SESSION_SECRET?: string;
-}
+export type { Env } from "./types";
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 app.get("/", (c) =>
   c.json({
     name: "Kosu",
     service: "kosu",
     status: "ok",
-    version: "0.1.0",
+    version: "0.2.0",
   }),
 );
 
 app.get("/health", (c) => c.json({ status: "ok" }));
+
+app.route("/", authRoutes);
+app.route("/", apiRoutes);
+
+app.notFound((c) =>
+  c.json({ error: { code: "NOT_FOUND", message: "Not found" } }, 404),
+);
+
+app.onError((err, c) => {
+  if (err instanceof ApiError) {
+    return c.json(
+      { error: { code: err.code, message: err.message } },
+      err.status as 400,
+    );
+  }
+  console.error("unhandled error", err);
+  return c.json(
+    { error: { code: "INTERNAL", message: "Internal server error" } },
+    500,
+  );
+});
 
 export default app;

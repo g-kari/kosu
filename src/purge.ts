@@ -307,53 +307,30 @@ export async function purgeAccount(
   const transferred: string[] = [];
   const successorByTenant = new Map<string, string>();
 
+  // Validate the complete ownership plan before ANY destructive mutation.
+  for (const owned of preview.owned_tenants) {
+    if (plan.dissolveTenantIds.includes(owned.tenant_id)) continue;
+    const successor = plan.successors[owned.tenant_id] ?? owned.other_owners[0];
+    if (!successor || successor === accountId) {
+      throw badRequest(`Tenant ${owned.tenant_id} requires an explicit successor or dissolution`);
+    }
+    const existing = await env.DB.prepare(
+      "SELECT role FROM tenant_members WHERE tenant_id = ?1 AND account_id = ?2",
+    ).bind(owned.tenant_id, successor).first<{role:string}>();
+    if (!existing) throw badRequest(`Successor for tenant ${owned.tenant_id} must be a direct tenant member`);
+    successorByTenant.set(owned.tenant_id, successor);
+  }
   for (const owned of preview.owned_tenants) {
     if (plan.dissolveTenantIds.includes(owned.tenant_id)) {
       await purgeTenant(env, owned.tenant_id);
       dissolved.push(owned.tenant_id);
-      continue;
-    }
-    let successor = plan.successors[owned.tenant_id];
-    if (!successor && owned.other_owners.length > 0) {
-      successor = owned.other_owners[0] as string;
-    }
-    if (!successor) {
-      const members = await tenantMemberIds(env, owned.tenant_id);
-      const candidate = members.find((id) => id !== accountId);
-      if (candidate) successor = candidate;
-    }
-    if (!successor) {
-      throw badRequest(
-        `Tenant ${owned.tenant_id} has no successor: name one or choose dissolution`,
-      );
-    }
-    // The successor must belong to the tenant; promote to owner.
-    const memberIds = await tenantMemberIds(env, owned.tenant_id);
-    if (!memberIds.includes(successor)) {
-      throw badRequest(
-        `Successor for tenant ${owned.tenant_id} must be a member of that tenant`,
-      );
-    }
-    const existing = await env.DB.prepare(
-      "SELECT role FROM tenant_members WHERE tenant_id = ?1 AND account_id = ?2",
-    )
-      .bind(owned.tenant_id, successor)
-      .first<{ role: string }>();
-    if (existing) {
+    } else {
+      const successor = successorByTenant.get(owned.tenant_id)!;
       await env.DB.prepare(
         "UPDATE tenant_members SET role = ?1 WHERE tenant_id = ?2 AND account_id = ?3",
-      )
-        .bind("owner", owned.tenant_id, successor)
-        .run();
-    } else {
-      await env.DB.prepare(
-        "INSERT INTO tenant_members (tenant_id, account_id, role, created_at) VALUES (?1, ?2, ?3, ?4)",
-      )
-        .bind(owned.tenant_id, successor, "owner", nowIso())
-        .run();
+      ).bind("owner", owned.tenant_id, successor).run();
+      transferred.push(owned.tenant_id);
     }
-    successorByTenant.set(owned.tenant_id, successor);
-    transferred.push(owned.tenant_id);
   }
 
   // Successors for tenants the account merely belongs to: their owner.
@@ -453,3 +430,4 @@ export async function purgeAccount(
   await deleteWhere(env, "accounts", "id", accountId);
   return { dissolved, transferred };
 }
+

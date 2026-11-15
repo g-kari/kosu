@@ -13,7 +13,7 @@ import {
   profileFromClaims,
   resolveAccount,
 } from "../accounts";
-import { requirePrincipal } from "../auth";
+import { requirePrincipal, requireSessionPrincipal } from "../auth";
 import { ApiError, badRequest } from "../errors";
 import { exchangeCode, getDiscovery, verifyJwt } from "../oidc";
 import {
@@ -174,7 +174,7 @@ authRoutes.post("/auth/logout", (c) => {
 
 /** The caller's public profile. Internal account id only — never the sub. */
 authRoutes.get("/me", async (c) => {
-  const principal = await requirePrincipal(c);
+  const principal = await requireSessionPrincipal(c);
   const account = await accountById(c.env, principal.accountId);
   if (!account) {
     throw badRequest("Account no longer exists");
@@ -198,7 +198,7 @@ authRoutes.get("/me", async (c) => {
  * Internal account ids only — never the sub.
  */
 authRoutes.get("/api/v1/me", async (c) => {
-  const principal = await requirePrincipal(c);
+  const principal = await requireSessionPrincipal(c);
   const account = await accountById(c.env, principal.accountId);
   if (!account) {
     throw badRequest("Account no longer exists");
@@ -244,3 +244,4 @@ authRoutes.get("/api/v1/me", async (c) => {
     auth: { kind: principal.kind },
   });
 });
+

@@ -29,7 +29,7 @@ import {
   updateApiKeyIpAllowlist,
 } from "../apikeys";
 import { recordAudit } from "../audit";
-import { assertKeyTenant, requirePrincipal } from "../auth";
+import { assertKeyTenant, requirePrincipal, requireSessionPrincipal } from "../auth";
 import { badRequest } from "../errors";
 import {
   cleanName,
@@ -95,7 +95,7 @@ async function auth(c: Ctx, tenantId?: string): Promise<Principal> {
 /* ------------------------------------------------------------------ */
 
 apiRoutes.post("/api/v1/tenants", async (c) => {
-  const principal = await auth(c);
+  const principal = await requireSessionPrincipal(c);
   const body = await readJsonBody(c);
   const row = await createTenant(c.env, principal, cleanName(body["name"]));
   const { access } = await guard(
@@ -642,3 +642,4 @@ apiRoutes.get("/api/v1/tenants/:tenantId/members", async (c) => {
   });
   return c.json({ members });
 });
+

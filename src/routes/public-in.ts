@@ -16,6 +16,11 @@
  * Failures are plain 401/404 without detail about which part
  * mismatched, and no secret or sub value is ever rendered here.
  */
+import { atomicWrites } from "../atomic-writes";
+import { nowIso } from "../accounts";
+import { sha256Hex, randomId } from "../tokens";
+import { assertWithinLimits } from "../usage";
+import { loadTenant,loadWorkspace,loadTeam } from "../hierarchy";
 import { Hono } from "hono";
 import {
   connectionWebhookSecret,
@@ -265,11 +270,14 @@ publicInRoutes.post("/inbound/mail/:token", async (c) => {
   const raw = await c.req.text();
   if (raw.length > BODY_LIMIT) return c.json({ error: "too_large" }, 413);
   let subject: string | null = null;
+  let messageId: string | null = null;
   const contentType = c.req.header("content-type") ?? "";
   if (contentType.includes("application/json")) {
     const body = jsonRecord(raw);
     const value = body?.["subject"] ?? body?.["title"];
     subject = typeof value === "string" && value ? value : null;
+    const suppliedId = body?.["message_id"];
+    if (typeof suppliedId === "string" && suppliedId.length > 0 && suppliedId.length <= 1024) messageId = suppliedId;
   }
   if (!subject) {
     // Plain-text fallback: the first non-empty line is the title.
@@ -283,9 +291,22 @@ publicInRoutes.post("/inbound/mail/:token", async (c) => {
   if (!title) return c.json({ error: "subject_required" }, 400);
   const project = await loadProjectRowLoose(c.env, row.project_id);
   if (!project) return c.json({ error: "project_not_found" }, 422);
+  await loadTenant(c.env,project.tenant_id);
+  await loadWorkspace(c.env,project.tenant_id,project.workspace_id);
+  await loadTeam(c.env,project.workspace_id,project.team_id);
+  // Stable upstream message IDs are deduplicated atomically. Without an ID,
+  // each delivery is distinct; identical text is not proof of a replay.
+  // Include the token row identity, never the secret token, in the hash domain.
+  const taskId = "mail_" + await sha256Hex(row.id + "\0" + (messageId ?? randomId()));
+  const existing = await c.env.DB.prepare("SELECT task_id FROM mail_receipts WHERE id = ?1").bind(taskId).first<{task_id:string}>();
+  if (existing) return c.json({ok:true,task_id:existing.task_id,duplicate:true});
+  await assertWithinLimits(c.env,project.tenant_id,"task");
   const openStatus = await statusSlugForCategory(c.env, project, "open");
-  const task = await insertTask(
-    c.env,
+  let task: TaskRow;
+  try { task = await atomicWrites(c.env,async(transaction)=>{
+    await transaction.DB.prepare("INSERT INTO mail_receipts (id,tenant_id,task_id,created_at) VALUES (?1,?2,?3,?4)").bind(taskId,project.tenant_id,taskId,nowIso()).run();
+    const created = await insertTask(
+    transaction,
     project,
     {
       title,
@@ -300,15 +321,20 @@ publicInRoutes.post("/inbound/mail/:token", async (c) => {
       estimateMinutes: null,
     },
     { accountId: row.created_by_account_id, admin: true },
+    taskId,
   );
-  await recordSyncRun(c.env, {
-    tenantId: row.tenant_id,
-    connectionId: null,
-    provider: "mail",
-    kind: "webhook",
-    status: "ok",
-    stats: { created_tasks: 1, task_id: task.id, project_id: project.id },
-    createdByAccountId: row.created_by_account_id,
-  });
+    await recordSyncRun(transaction,{tenantId:row.tenant_id,connectionId:null,provider:"mail",kind:"webhook",status:"ok",stats:{created_tasks:1,task_id:created.id,project_id:project.id},createdByAccountId:row.created_by_account_id});
+    return created;
+  }); } catch(error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message.includes("UNIQUE constraint failed: mail_receipts.id")) {
+      const found=await c.env.DB.prepare("SELECT task_id FROM mail_receipts WHERE id = ?1").bind(taskId).first<{task_id:string}>();
+      if(found) return c.json({ok:true,task_id:found.task_id,duplicate:true});
+    }
+    if (message.includes("Mail inbound rate limit")) return c.json({error:"rate_limited"},429);
+    if (message.includes("Tenant task capacity")) return c.json({error:"limit_exceeded"},422);
+    throw error;
+  }
   return c.json({ ok: true, task_id: task.id }, 201);
 });
+

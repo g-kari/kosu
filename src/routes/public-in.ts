@@ -30,6 +30,7 @@ import {
   touchIcalFeed,
   verifyWebhookSignature,
 } from "../integrations";
+import { accessForProject, type RoleChain } from "../permissions";
 import { insertTask } from "../tasks";
 import type {
   Env,
@@ -169,37 +170,45 @@ publicInRoutes.get("/feeds/ical/:file", async (c) => {
   )
     .bind(feed.tenant_id)
     .all<ProjectRow>();
-  const memberOf = async (sql: string, ...binds: unknown[]) => {
-    const row = await c.env.DB.prepare(sql)
-      .bind(...binds)
-      .first<Record<string, unknown>>();
-    return row !== null;
+  // A retained feed token must not outlive its resource hierarchy.
+  const tenant = await c.env.DB.prepare("SELECT id FROM tenants WHERE id = ?1 AND deleted_at IS NULL")
+    .bind(feed.tenant_id).first();
+  if (!tenant) return c.notFound();
+  const roles = new Map<string, string | null>();
+  const role = async (table: string, column: string, id: string): Promise<string | null> => {
+    const key = `${table}:${id}`;
+    if (!roles.has(key)) {
+      const row = await c.env.DB.prepare(`SELECT role FROM ${table} WHERE ${column} = ?1 AND account_id = ?2`)
+        .bind(id, feed.account_id).first<{role:string}>();
+      roles.set(key, row?.role ?? null);
+    }
+    return roles.get(key) ?? null;
   };
-  const isTenantMember = await memberOf(
-    "SELECT account_id FROM tenant_members WHERE tenant_id = ?1 AND account_id = ?2",
-    feed.tenant_id,
-    feed.account_id,
-  );
+  const tenantRole = await role("tenant_members", "tenant_id", feed.tenant_id) as RoleChain["tenant"];
+  const activeWorkspaces = new Map<string, boolean>();
+  const activeTeams = new Map<string, boolean>();
   const readableProjectIds = new Set<string>();
   for (const project of projectsRes.results) {
-    const readable =
-      isTenantMember ||
-      (await memberOf(
-        "SELECT account_id FROM workspace_members WHERE workspace_id = ?1 AND account_id = ?2",
-        project.workspace_id,
-        feed.account_id,
-      )) ||
-      (await memberOf(
-        "SELECT account_id FROM team_members WHERE team_id = ?1 AND account_id = ?2",
-        project.team_id,
-        feed.account_id,
-      )) ||
-      (await memberOf(
-        "SELECT account_id FROM project_members WHERE project_id = ?1 AND account_id = ?2",
-        project.id,
-        feed.account_id,
-      ));
-    if (readable) readableProjectIds.add(project.id);
+    if (!activeWorkspaces.has(project.workspace_id)) {
+      const row = await c.env.DB.prepare("SELECT id FROM workspaces WHERE id = ?1 AND tenant_id = ?2 AND deleted_at IS NULL")
+        .bind(project.workspace_id, feed.tenant_id).first();
+      activeWorkspaces.set(project.workspace_id, row !== null);
+    }
+    if (!activeWorkspaces.get(project.workspace_id)) continue;
+    const teamKey = `${project.workspace_id}:${project.team_id}`;
+    if (!activeTeams.has(teamKey)) {
+      const row = await c.env.DB.prepare("SELECT id FROM teams WHERE id = ?1 AND workspace_id = ?2 AND deleted_at IS NULL")
+        .bind(project.team_id, project.workspace_id).first();
+      activeTeams.set(teamKey, row !== null);
+    }
+    if (!activeTeams.get(teamKey)) continue;
+    const chain: RoleChain = {
+      tenant: tenantRole,
+      workspace: await role("workspace_members", "workspace_id", project.workspace_id) as RoleChain["workspace"],
+      team: await role("team_members", "team_id", project.team_id) as RoleChain["team"],
+      project: await role("project_members", "project_id", project.id) as RoleChain["project"],
+    };
+    if (accessForProject(chain).read) readableProjectIds.add(project.id);
   }
   const allTasks = await c.env.DB.prepare(
     "SELECT * FROM tasks WHERE tenant_id = ?1 AND deleted_at IS NULL",
@@ -312,3 +321,4 @@ publicInRoutes.post("/inbound/mail/:token", async (c) => {
   });
   return c.json({ ok: true, task_id: task.id }, 201);
 });
+

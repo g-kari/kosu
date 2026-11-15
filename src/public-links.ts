@@ -119,7 +119,10 @@ export async function resolveShareToken(
     .bind(hash)
     .first<PublicShareLinkRow>();
   if (!link || link.revoked_at) return null;
-  if (link.expires_at && link.expires_at <= nowIso()) return null;
+  if (link.expires_at) {
+    const expiresAt = Date.parse(link.expires_at);
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null;
+  }
   const project = await env.DB.prepare(
     "SELECT * FROM projects WHERE id = ?1 AND deleted_at IS NULL",
   )
@@ -355,5 +358,6 @@ export function parseExpiresAt(body: Record<string, unknown>): string | null {
   if (typeof v !== "string" || Number.isNaN(Date.parse(v))) {
     throw badRequest('"expires_at" must be an ISO 8601 timestamp or null');
   }
-  return v;
+  return new Date(v).toISOString();
 }
+

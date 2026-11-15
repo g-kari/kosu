@@ -15,7 +15,7 @@
  * device can be cut off without rotating the account.
  */
 import { Hono } from "hono";
-import { badRequest, forbidden } from "../errors";
+import { badRequest, forbidden, conflict } from "../errors";
 import { cleanName, guard, loadTenant } from "../hierarchy";
 import {
   applyPush,
@@ -26,6 +26,7 @@ import {
   requireActiveDevice,
   revokeDevice,
   syncPull,
+  syncScopeToken,
   syncStatus,
   type PushChange,
 } from "../sync";
@@ -87,6 +88,8 @@ syncRoutes.post(`${TENANT_SYNC}/push`, async (c) => {
   const body = await readJsonBody(c);
   const deviceId = deviceIdFrom(body["device_id"]);
   const principal = await deviceGate(c, tenantId, deviceId);
+  if (body["protocol"] !== 2) throw badRequest("Sync client upgrade required (protocol 2)");
+  if (body["scope_token"] !== await syncScopeToken(c.env,principal,tenantId)) throw conflict("SYNC_SCOPE_CHANGED", "Refresh access before uploading local changes");
   const changes = body["changes"];
   if (!Array.isArray(changes)) throw badRequest('"changes" must be an array');
   const result = await applyPush(
@@ -102,10 +105,11 @@ syncRoutes.post(`${TENANT_SYNC}/push`, async (c) => {
 syncRoutes.get(`${TENANT_SYNC}/pull`, async (c) => {
   const tenantId = c.req.param("tenantId") as string;
   const deviceId = deviceIdFrom(c.req.query("device_id"));
-  await deviceGate(c, tenantId, deviceId);
+  const principal = await deviceGate(c, tenantId, deviceId);
   const sinceSeq = queryInt(c, "since_seq", 0, 0, Number.MAX_SAFE_INTEGER);
   const limit = queryInt(c, "limit", 500, 1, 1000);
-  return c.json(await syncPull(c.env, tenantId, sinceSeq, limit));
+  if (c.req.query("protocol") !== "2") throw badRequest("Sync client upgrade required (protocol 2)");
+  return c.json(await syncPull(c.env, principal, tenantId, sinceSeq, limit, c.req.query("scope_token") ?? ""));
 });
 
 syncRoutes.get(`${TENANT_SYNC}/status`, async (c) => {
@@ -161,3 +165,4 @@ syncRoutes.post("/api/v1/me/encryption-key/recover", async (c) => {
   const row = await recoverAccountKey(c.env, principal.accountId, code);
   return c.json({ vault: publicVault(row), verified: true });
 });
+

@@ -110,7 +110,7 @@ class FakeStatement {
   private selectRows(): Row[] {
     const sql = this.sql;
     const m = sql.match(
-      /^SELECT\s+(.+?)\s+FROM\s+(\w+)(?:\s+WHERE\s+(.+?))?(?:\s+ORDER\s+BY\s+(\w+)\s+(ASC|DESC))?$/i,
+      /^SELECT\s+(.+?)\s+FROM\s+(\w+)(?:\s+WHERE\s+(.+?))?(?:\s+ORDER\s+BY\s+(\w+)\s+(ASC|DESC))?(?:\s+LIMIT\s+(\d+))?$/i,
     );
     if (!m) throw new Error(`FakeDb: unsupported SELECT: ${sql}`);
     const cols = (m[1] as string).trim();
@@ -122,6 +122,7 @@ class FakeStatement {
       const dir = (m[5] as string).toUpperCase() === "DESC" ? -1 : 1;
       rows.sort((a, b) => compareValues(a[col], b[col]) * dir);
     }
+    if (m[6]) rows.splice(Number(m[6]));
     if (cols === "*") return rows.map((r) => ({ ...r }));
     const names = cols.split(",").map((s) => s.trim());
     return rows.map((r) => {
@@ -330,3 +331,4 @@ export async function sessionCookieFor(accountId: string): Promise<string> {
   });
   return `__Host-kosu_session=${encodeURIComponent(value)}`;
 }
+

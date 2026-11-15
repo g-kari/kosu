@@ -30,8 +30,9 @@
  *   GET         /api/v1/admin/overview            (operator, session only)
  */
 import { Hono } from "hono";
+import { guardAutomationScope, guardStoredAutomationScope } from "../automation-access";
 import { nowIso } from "../accounts";
-import { badRequest, forbidden, notFound } from "../errors";
+import { ApiError, badRequest, forbidden, notFound } from "../errors";
 import {
   guard,
   loadProject,
@@ -60,6 +61,7 @@ import {
   instantiateProjectTemplate,
   listProjectTemplates,
   publicTemplate,
+  guardTemplateAccess,
 } from "../project-templates";
 import {
   getDefinition,
@@ -153,7 +155,12 @@ phase5Routes.get(`${TENANT_PATH}/automation-rules`, async (c) => {
   await loadTenant(c.env, tenantId);
   await guard(c.env, principal, { tenantId }, "read");
   const rules = await listRules(c.env, tenantId);
-  return c.json({ rules: rules.map(publicRule) });
+  const visible = [];
+  for (const row of rules) {
+    try { await guardStoredAutomationScope(c.env,principal,tenantId,row.project_id,"read"); visible.push(row); }
+    catch(error) { if (!(error instanceof ApiError) || ![403,404].includes(error.status)) throw error; }
+  }
+  return c.json({ rules: visible.map(publicRule) });
 });
 
 phase5Routes.post(`${TENANT_PATH}/automation-rules`, async (c) => {
@@ -163,14 +170,7 @@ phase5Routes.post(`${TENANT_PATH}/automation-rules`, async (c) => {
   await loadTenant(c.env, tenantId);
   await guard(c.env, principal, { tenantId }, "write");
   const input = parseRuleBody(body);
-  if (input.projectId) {
-    const project = await c.env.DB.prepare(
-      "SELECT id FROM projects WHERE id = ?1 AND tenant_id = ?2 AND deleted_at IS NULL",
-    )
-      .bind(input.projectId, tenantId)
-      .first<{ id: string }>();
-    if (!project) throw notFound("Project not found");
-  }
+  await guardAutomationScope(c.env,principal,tenantId,input.projectId,"admin");
   const row = await insertRule(c.env, tenantId, input, principal.accountId);
   return c.json({ rule: publicRule(row) }, 201);
 });
@@ -182,6 +182,7 @@ phase5Routes.get(`${TENANT_PATH}/automation-rules/:ruleId`, async (c) => {
   await guard(c.env, principal, { tenantId }, "read");
   const row = await getRule(c.env, tenantId, c.req.param("ruleId") as string);
   if (!row) throw notFound("Automation rule not found");
+  await guardStoredAutomationScope(c.env,principal,tenantId,row.project_id,"read");
   return c.json({ rule: publicRule(row) });
 });
 
@@ -194,6 +195,8 @@ phase5Routes.patch(`${TENANT_PATH}/automation-rules/:ruleId`, async (c) => {
   const row = await getRule(c.env, tenantId, c.req.param("ruleId") as string);
   if (!row) throw notFound("Automation rule not found");
   const input = parseRuleBody(body);
+  await guardStoredAutomationScope(c.env,principal,tenantId,row.project_id,"admin");
+  await guardAutomationScope(c.env,principal,tenantId,input.projectId,"admin");
   const next = await updateRule(c.env, row, input);
   return c.json({ rule: publicRule(next) });
 });
@@ -205,6 +208,7 @@ phase5Routes.delete(`${TENANT_PATH}/automation-rules/:ruleId`, async (c) => {
   await guard(c.env, principal, { tenantId }, "write");
   const row = await getRule(c.env, tenantId, c.req.param("ruleId") as string);
   if (!row) throw notFound("Automation rule not found");
+  await guardStoredAutomationScope(c.env,principal,tenantId,row.project_id,"admin");
   await deleteRule(c.env, row);
   return c.json({ ok: true });
 });
@@ -213,7 +217,7 @@ phase5Routes.get(`${TENANT_PATH}/automation-runs`, async (c) => {
   const tenantId = c.req.param("tenantId") as string;
   const principal = await auth(c, tenantId);
   await loadTenant(c.env, tenantId);
-  await guard(c.env, principal, { tenantId }, "read");
+  await guard(c.env, principal, { tenantId }, "admin");
   const raw = c.req.query("limit");
   const limit = raw ? Math.min(200, Math.max(1, Number(raw) || 50)) : 50;
   return c.json({ runs: await listRuns(c.env, tenantId, limit) });
@@ -229,7 +233,12 @@ phase5Routes.get(`${TENANT_PATH}/project-templates`, async (c) => {
   await loadTenant(c.env, tenantId);
   await guard(c.env, principal, { tenantId }, "read");
   const templates = await listProjectTemplates(c.env, tenantId);
-  return c.json({ templates: templates.map(publicTemplate) });
+  const visible = [];
+  for (const row of templates) {
+    try { await guardTemplateAccess(c.env,principal,row,"read"); visible.push(row); }
+    catch(error) { if (!(error instanceof ApiError) || ![403,404].includes(error.status)) throw error; }
+  }
+  return c.json({ templates: visible.map(publicTemplate) });
 });
 
 phase5Routes.post(`${TENANT_PATH}/project-templates`, async (c) => {
@@ -274,6 +283,7 @@ phase5Routes.delete(
       tenantId,
       c.req.param("templateId") as string,
     );
+    await guardTemplateAccess(c.env,principal,row,"admin");
     await deleteProjectTemplate(c.env, row);
     return c.json({ ok: true });
   },
@@ -890,3 +900,4 @@ phase5Routes.get("/api/v1/admin/overview", async (c) => {
   }
   return c.json(await adminOverview(c.env));
 });
+

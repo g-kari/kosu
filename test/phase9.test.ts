@@ -38,7 +38,7 @@ describe("phase 9: offline support", () => {
     const sw = await app.request(`${ORIGIN}/sw.js`, {}, env);
     const body = await sw.text();
     expect(body).toContain("kosu-shell-v3");
-    expect(body).toContain("kosu-data-v1");
+    expect(body).toContain("kosu-data-v2");
     expect(body).toContain("encryption-key");
     expect(body).toContain("/attachments/");
     expect(body).toContain("/auth/logout");
@@ -107,3 +107,4 @@ describe("phase 9: offline support", () => {
     expect(stale.status).toBe(400);
   });
 });
+

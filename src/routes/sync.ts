@@ -138,6 +138,7 @@ syncRoutes.get("/api/v1/me/encryption-key", async (c) => {
 syncRoutes.put("/api/v1/me/encryption-key", async (c) => {
   const principal = await auth(c);
   const body = await readJsonBody(c);
+  if (body["expected_account_id"] !== undefined && body["expected_account_id"] !== principal.accountId) throw forbidden("Account changed during vault operation");
   const input = parseVaultInput(body);
   const rotate = body["rotate"] === true;
   const currentRecoveryCode =
@@ -148,16 +149,18 @@ syncRoutes.put("/api/v1/me/encryption-key", async (c) => {
     rotate,
     currentRecoveryCode,
   });
-  return c.json({ vault: publicVault(row) });
+  return c.json({ vault: publicVault(row), account_id: principal.accountId });
 });
 
 syncRoutes.post("/api/v1/me/encryption-key/recover", async (c) => {
   const principal = await auth(c);
   const body = await readJsonBody(c);
+  if (body["expected_account_id"] !== undefined && body["expected_account_id"] !== principal.accountId) throw forbidden("Account changed during vault operation");
   const code = body["recovery_code"];
   if (typeof code !== "string" || !code) {
     throw badRequest('"recovery_code" is required');
   }
   const row = await recoverAccountKey(c.env, principal.accountId, code);
-  return c.json({ vault: publicVault(row), verified: true });
+  return c.json({ vault: publicVault(row), verified: true, account_id: principal.accountId });
 });
+

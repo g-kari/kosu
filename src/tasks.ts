@@ -14,7 +14,7 @@
 import { nowIso } from "./accounts";
 import { recordAudit } from "./audit";
 import { ApiError, badRequest, conflict, notFound } from "./errors";
-import { cleanName } from "./hierarchy";
+import { cleanName, guard, loadTenant, loadWorkspace, loadTeam, loadProject } from "./hierarchy";
 import { recordTaskHistory } from "./history";
 import { assertEntryEditable } from "./locks";
 import { recordChange } from "./sync-core";
@@ -1121,6 +1121,23 @@ export async function applyEntryPatch(
   patch: Partial<EntryInput>,
   source: ChangeSource,
 ): Promise<TimeEntryRow> {
+  if (patch.taskId !== undefined && patch.taskId !== null && patch.taskId !== current.task_id) {
+    const task = await loadTaskAny(env, patch.taskId);
+    if (!task || task.deleted_at) throw notFound("Task not found");
+    if (task.tenant_id !== current.tenant_id || task.workspace_id !== current.workspace_id) {
+      throw badRequest("A time entry cannot be moved outside its workspace");
+    }
+    const project = await env.DB.prepare("SELECT * FROM projects WHERE id = ?1").bind(task.project_id).first<ProjectRow>();
+    if (!project || project.tenant_id !== current.tenant_id || project.workspace_id !== current.workspace_id) throw notFound("Project not found");
+    await loadTenant(env, current.tenant_id);
+    await loadWorkspace(env, current.tenant_id, project.workspace_id);
+    await loadTeam(env, project.workspace_id, project.team_id);
+    await loadProject(env, project.team_id, project.id);
+    await guard(env, { kind: "session", accountId: source.accountId }, {
+      tenantId: project.tenant_id, workspaceId: project.workspace_id,
+      teamId: project.team_id, projectId: project.id,
+    }, "write");
+  }
   const startedAt = patch.startedAt ?? current.started_at;
   await assertEntryEditable(env, {
     tenantId: current.tenant_id,
@@ -1804,4 +1821,5 @@ export async function dashboard(
     doing_tasks: doing.map(publicTask),
   };
 }
+
 

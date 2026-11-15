@@ -174,6 +174,7 @@ authRoutes.post("/auth/logout", (c) => {
 
 /** The caller's public profile. Internal account id only — never the sub. */
 authRoutes.get("/me", async (c) => {
+  c.header("Cache-Control", "no-store");
   const principal = await requirePrincipal(c);
   const account = await accountById(c.env, principal.accountId);
   if (!account) {
@@ -244,3 +245,4 @@ authRoutes.get("/api/v1/me", async (c) => {
     auth: { kind: principal.kind },
   });
 });
+

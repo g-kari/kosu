@@ -5,6 +5,7 @@ import sql0003 from "../migrations/0003_phase2.sql?raw";
 import sql0004 from "../migrations/0004_phase3.sql?raw";
 import sql0005 from "../migrations/0005_phase4.sql?raw";
 import sql0006 from "../migrations/0006_phase5.sql?raw";
+import sql0007 from "../migrations/0007_report_bounds.sql?raw";
 
 // Applies the real migration files to an in-memory SQLite (Node's built-in
 // node:sqlite) to prove 0001 + 0002 compose into the phase-1 schema.
@@ -255,4 +256,18 @@ describe("migrations", () => {
     expect(violations).toHaveLength(0);
     db.close();
   });
+});
+
+
+it('enforces report storage limits inside SQLite, including direct writes',async(ctx)=>{
+ const db=await openSqlite();if(!db){ctx.skip();return;}
+ try{
+  for(const sql of [sql0001,sql0002,sql0003,sql0004,sql0005,sql0006,sql0007])db.exec(sql);
+  db.exec('PRAGMA foreign_keys = OFF');
+  for(let i=0;i<100;i++)db.exec(`INSERT INTO report_definitions (id,tenant_id,name,definition_json,created_by_account_id,created_at,updated_at) VALUES ('d${i}','t','r','{}','a','now','now')`);
+  expect(()=>db.exec("INSERT INTO report_definitions (id,tenant_id,name,definition_json,created_by_account_id,created_at,updated_at) VALUES ('overflow','t','r','{}','a','now','now')")).toThrow('capacity');
+  for(let i=0;i<1000;i++)db.exec(`INSERT INTO report_runs VALUES ('r${i}','t','d0','{}','now')`);
+  expect(()=>db.exec("INSERT INTO report_runs VALUES ('overflow','t','d0','{}','now')")).toThrow('capacity');
+  expect(db.prepare("SELECT id FROM report_runs WHERE tenant_id = 't'").all()).toHaveLength(1000);
+ }finally{db.close();}
 });

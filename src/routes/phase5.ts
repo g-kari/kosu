@@ -326,11 +326,35 @@ phase5Routes.post(
 /* Report definitions                                                   */
 /* ------------------------------------------------------------------ */
 
+/** Explicit administrator recovery of retained capacity; never automatic cleanup. */
+phase5Routes.get(`${TENANT_PATH}/report-storage`, async(c)=>{
+  const tenantId=c.req.param("tenantId") as string;
+  const principal=await auth(c,tenantId);await loadTenant(c.env,tenantId);
+  await guard(c.env,principal,{tenantId},"admin");
+  const definitions=await c.env.DB.prepare("SELECT id, name, deleted_at FROM report_definitions WHERE tenant_id = ?1").bind(tenantId).all();
+  const runs=await c.env.DB.prepare("SELECT id, definition_id, created_at FROM report_runs WHERE tenant_id = ?1").bind(tenantId).all();
+  return c.json({definitions:definitions.results,runs:runs.results,limits:{definitions:100,runs:1000}});
+});
+phase5Routes.delete(`${TENANT_PATH}/report-storage/:kind/:id`,async(c)=>{
+  const tenantId=c.req.param("tenantId") as string;
+  const principal=await auth(c,tenantId);await loadTenant(c.env,tenantId);
+  await guard(c.env,principal,{tenantId},"admin");
+  if(c.req.query("confirm")!=="permanent") throw badRequest("Explicit permanent deletion confirmation required");
+  const kind=c.req.param("kind"),id=c.req.param("id");
+  if(kind!=="definitions" && kind!=="runs") throw notFound();
+  const table=kind==="definitions"?"report_definitions":"report_runs";
+  const row=await c.env.DB.prepare(`SELECT * FROM ${table} WHERE id = ?1 AND tenant_id = ?2`).bind(id,tenantId).first<{deleted_at?:string|null}>();
+  if(!row) throw notFound();
+  if(kind==="definitions" && !row.deleted_at) throw badRequest("Soft-delete the definition before permanently removing it");
+  await c.env.DB.prepare(`DELETE FROM ${table} WHERE id = ?1 AND tenant_id = ?2${kind==="definitions"?" AND deleted_at IS NOT NULL":""}`).bind(id,tenantId).run();
+  return c.json({ok:true});
+});
+
 phase5Routes.get(`${TENANT_PATH}/report-definitions`, async (c) => {
   const tenantId = c.req.param("tenantId") as string;
   const principal = await auth(c, tenantId);
   await loadTenant(c.env, tenantId);
-  await guard(c.env, principal, { tenantId }, "read");
+  await guard(c.env, principal, { tenantId }, "admin");
   const defs = await listDefinitions(c.env, tenantId);
   return c.json({ definitions: defs.map(publicDefinition) });
 });
@@ -340,7 +364,7 @@ phase5Routes.post(`${TENANT_PATH}/report-definitions`, async (c) => {
   const principal = await auth(c, tenantId);
   const body = await readJsonBody(c);
   await loadTenant(c.env, tenantId);
-  await guard(c.env, principal, { tenantId }, "write");
+  await guard(c.env, principal, { tenantId }, "admin");
   const name = body["name"];
   if (typeof name !== "string" || name.trim() === "" || name.length > 200) {
     throw badRequest('"name" is required (max 200 chars)');
@@ -370,14 +394,14 @@ phase5Routes.patch(
     const principal = await auth(c, tenantId);
     const body = await readJsonBody(c);
     await loadTenant(c.env, tenantId);
-    await guard(c.env, principal, { tenantId }, "write");
+    await guard(c.env, principal, { tenantId }, "admin");
     const row = await getDefinition(
       c.env,
       tenantId,
       c.req.param("defId") as string,
     );
     if (!row) throw notFound("Report definition not found");
-    // Replace semantics via soft-delete + insert keeps history simple.
+    // Update in place: a failed replacement must not delete the existing definition.
     const name =
       typeof body["name"] === "string" && body["name"].trim() !== ""
         ? (body["name"] as string).trim()
@@ -391,18 +415,11 @@ phase5Routes.patch(
       body["definition"] !== undefined
         ? parseDefinition(body["definition"])
         : parseDefinition(row.definition_json);
-    await c.env.DB.prepare(
-      "UPDATE report_definitions SET deleted_at = ?1, updated_at = ?2 WHERE id = ?3",
-    )
-      .bind(nowIso(), nowIso(), row.id)
-      .run();
-    const next = await insertDefinition(c.env, {
-      tenantId,
-      name,
-      definition,
-      schedule,
-      createdBy: principal.accountId,
-    });
+    const now = nowIso();
+    const next = {...row,name,definition_json:JSON.stringify(definition),schedule,updated_at:now,
+      next_run_at:schedule === "off" ? null : now,created_by_account_id:principal.accountId};
+    await c.env.DB.prepare("UPDATE report_definitions SET name = ?1, definition_json = ?2, schedule = ?3, next_run_at = ?4, created_by_account_id = ?5, updated_at = ?6 WHERE id = ?7")
+      .bind(next.name,next.definition_json,next.schedule,next.next_run_at,next.created_by_account_id,now,row.id).run();
     return c.json({ definition: publicDefinition(next) });
   },
 );
@@ -413,7 +430,7 @@ phase5Routes.delete(
     const tenantId = c.req.param("tenantId") as string;
     const principal = await auth(c, tenantId);
     await loadTenant(c.env, tenantId);
-    await guard(c.env, principal, { tenantId }, "write");
+    await guard(c.env, principal, { tenantId }, "admin");
     const row = await getDefinition(
       c.env,
       tenantId,
@@ -435,7 +452,7 @@ phase5Routes.post(
     const tenantId = c.req.param("tenantId") as string;
     const principal = await auth(c, tenantId);
     await loadTenant(c.env, tenantId);
-    await guard(c.env, principal, { tenantId }, "read");
+    await guard(c.env, principal, { tenantId }, "admin");
     const row = await getDefinition(
       c.env,
       tenantId,
@@ -451,7 +468,7 @@ phase5Routes.get(`${TENANT_PATH}/report-definitions/:defId/runs`, async (c) => {
   const tenantId = c.req.param("tenantId") as string;
   const principal = await auth(c, tenantId);
   await loadTenant(c.env, tenantId);
-  await guard(c.env, principal, { tenantId }, "read");
+  await guard(c.env, principal, { tenantId }, "admin");
   const row = await getDefinition(
     c.env,
     tenantId,

@@ -11,6 +11,7 @@
  * "skipped" — so the log explains why nothing happened).
  */
 
+import { guardAutomationScope } from "./automation-access";
 import { randomId } from "./tokens";
 import { badRequest } from "./errors";
 import { nowIso } from "./accounts";
@@ -328,7 +329,7 @@ export async function runAutomationRules(
   env: Env,
   event: AutomationEvent,
 ): Promise<void> {
-  const source: ChangeSource = { accountId: event.actorAccountId };
+
   const rules = (await listRules(env, event.tenantId)).filter(
     (r) =>
       r.trigger_kind === event.trigger &&
@@ -347,6 +348,10 @@ export async function runAutomationRules(
     const actions = safeParse(rule.actions_json, []) as AutomationAction[];
     const applied: string[] = [];
     try {
+      const principal = {kind:"session" as const,accountId:rule.created_by_account_id};
+      await guardAutomationScope(env,principal,event.tenantId,rule.project_id,"admin");
+      await guardAutomationScope(env,principal,event.tenantId,event.task.project_id,"admin");
+      const source: ChangeSource = {accountId:rule.created_by_account_id};
       let current = event.task;
       for (const action of actions) {
         if (action.type === "set_status") {
@@ -427,3 +432,4 @@ export async function listRuns(
     .all<Record<string, unknown>>();
   return (results ?? []).slice(0, limit);
 }
+

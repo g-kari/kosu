@@ -617,7 +617,7 @@ phase5Routes.delete(`${PROJECT_PATH}/share-links/:linkId`, async (c) => {
     { tenantId: a.tenantId, workspaceId: a.workspaceId, teamId: a.teamId, projectId: a.projectId },
     "admin",
   );
-  await revokeShareLink(c.env, a.tenantId, c.req.param("linkId") as string);
+  await revokeShareLink(c.env, a.tenantId, a.projectId, c.req.param("linkId") as string);
   return c.json({ ok: true });
 });
 
@@ -679,6 +679,7 @@ phase5Routes.patch(`${PROJECT_PATH}/intake-forms/:formId`, async (c) => {
   const form = await setIntakeFormEnabled(
     c.env,
     a.tenantId,
+    a.projectId,
     c.req.param("formId") as string,
     body["enabled"],
   );
@@ -695,7 +696,7 @@ phase5Routes.delete(`${PROJECT_PATH}/intake-forms/:formId`, async (c) => {
     { tenantId: a.tenantId, workspaceId: a.workspaceId, teamId: a.teamId, projectId: a.projectId },
     "admin",
   );
-  await revokeIntakeForm(c.env, a.tenantId, c.req.param("formId") as string);
+  await revokeIntakeForm(c.env, a.tenantId, a.projectId, c.req.param("formId") as string);
   return c.json({ ok: true });
 });
 
@@ -890,3 +891,4 @@ phase5Routes.get("/api/v1/admin/overview", async (c) => {
   }
   return c.json(await adminOverview(c.env));
 });
+

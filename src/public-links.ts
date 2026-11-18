@@ -91,18 +91,19 @@ export async function listShareLinks(
 export async function revokeShareLink(
   env: Env,
   tenantId: string,
+  projectId: string,
   id: string,
 ): Promise<void> {
   const row = await env.DB.prepare(
-    "SELECT * FROM public_share_links WHERE id = ?1 AND tenant_id = ?2",
+    "SELECT * FROM public_share_links WHERE id = ?1 AND tenant_id = ?2 AND project_id = ?3",
   )
-    .bind(id, tenantId)
+    .bind(id, tenantId, projectId)
     .first<PublicShareLinkRow>();
   if (!row || row.revoked_at) throw notFound("Share link not found");
   await env.DB.prepare(
-    "UPDATE public_share_links SET revoked_at = ?1 WHERE id = ?2",
+    "UPDATE public_share_links SET revoked_at = ?1 WHERE id = ?2 AND tenant_id = ?3 AND project_id = ?4",
   )
-    .bind(nowIso(), id)
+    .bind(nowIso(), id, tenantId, projectId)
     .run();
 }
 
@@ -267,19 +268,20 @@ export async function listIntakeForms(
 export async function setIntakeFormEnabled(
   env: Env,
   tenantId: string,
+  projectId: string,
   id: string,
   enabled: boolean,
 ): Promise<IntakeFormRow> {
   const row = await env.DB.prepare(
-    "SELECT * FROM intake_forms WHERE id = ?1 AND tenant_id = ?2",
+    "SELECT * FROM intake_forms WHERE id = ?1 AND tenant_id = ?2 AND project_id = ?3",
   )
-    .bind(id, tenantId)
+    .bind(id, tenantId, projectId)
     .first<IntakeFormRow>();
   if (!row || row.revoked_at) throw notFound("Intake form not found");
   await env.DB.prepare(
-    "UPDATE intake_forms SET enabled = ?1 WHERE id = ?2",
+    "UPDATE intake_forms SET enabled = ?1 WHERE id = ?2 AND tenant_id = ?3 AND project_id = ?4",
   )
-    .bind(enabled ? 1 : 0, id)
+    .bind(enabled ? 1 : 0, id, tenantId, projectId)
     .run();
   return { ...row, enabled: enabled ? 1 : 0 };
 }
@@ -287,18 +289,19 @@ export async function setIntakeFormEnabled(
 export async function revokeIntakeForm(
   env: Env,
   tenantId: string,
+  projectId: string,
   id: string,
 ): Promise<void> {
   const row = await env.DB.prepare(
-    "SELECT * FROM intake_forms WHERE id = ?1 AND tenant_id = ?2",
+    "SELECT * FROM intake_forms WHERE id = ?1 AND tenant_id = ?2 AND project_id = ?3",
   )
-    .bind(id, tenantId)
+    .bind(id, tenantId, projectId)
     .first<IntakeFormRow>();
   if (!row || row.revoked_at) throw notFound("Intake form not found");
   await env.DB.prepare(
-    "UPDATE intake_forms SET revoked_at = ?1 WHERE id = ?2",
+    "UPDATE intake_forms SET revoked_at = ?1 WHERE id = ?2 AND tenant_id = ?3 AND project_id = ?4",
   )
-    .bind(nowIso(), id)
+    .bind(nowIso(), id, tenantId, projectId)
     .run();
 }
 

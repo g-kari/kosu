@@ -129,10 +129,10 @@ export function parseConfig(
         } catch {
           throw badRequest('"config.base_url" must be a valid URL');
         }
-        if (u.protocol !== "https:") {
+        if (u.protocol !== "https:" || u.username || u.password || u.search || u.hash) {
           throw badRequest('"config.base_url" must be an https URL');
         }
-        out["base_url"] = base.replace(/\/+$/, "");
+        out["base_url"] = u.href.replace(/\/+$/, "");
       }
       break;
     }
@@ -370,6 +370,13 @@ export async function updateConnection(
     secret_enc: row.secret_enc,
     updated_at: nowIso(),
   };
+  // A saved write-only credential is bound to its original service origin.
+  // Changing destination requires an explicitly supplied replacement token.
+  if (row.provider === "timecrowd" && patch.config !== undefined) {
+    const previous = new URL(configOf(row)["base_url"] ?? "https://timecrowd.net/api/v1");
+    const replacement = new URL(patch.config["base_url"] ?? "https://timecrowd.net/api/v1");
+    if (previous.origin !== replacement.origin) next.secret_enc = null;
+  }
   if (patch.token !== undefined) {
     next.secret_enc =
       patch.token === null
@@ -950,7 +957,7 @@ async function syncTimecrowd(
 
   // Tasks first so entries can attach to their mirrored task.
   const taskIdByExternal = new Map<string, string>();
-  const tasksRes = await fetcher(`${base}/tasks`, { headers });
+  const tasksRes = await fetcher(`${base}/tasks`, { headers, redirect: "error" });
   if (tasksRes.status < 200 || tasksRes.status >= 300) {
     throw new Error(`TimeCrowd API returned HTTP ${tasksRes.status} for /tasks`);
   }
@@ -999,7 +1006,7 @@ async function syncTimecrowd(
     stats.created++;
   }
 
-  const entriesRes = await fetcher(`${base}/time_entries`, { headers });
+  const entriesRes = await fetcher(`${base}/time_entries`, { headers, redirect: "error" });
   if (entriesRes.status < 200 || entriesRes.status >= 300) {
     throw new Error(
       `TimeCrowd API returned HTTP ${entriesRes.status} for /time_entries`,
@@ -1758,3 +1765,4 @@ export async function loadMailInboundTokenByToken(
     .first<MailInboundTokenRow>();
   return row ?? null;
 }
+

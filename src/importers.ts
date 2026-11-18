@@ -11,6 +11,8 @@
  * ActivityWatch events become entries on per-app tasks named
  * "ActivityWatch: <app>" — drafts the user can rename or reassign.
  */
+import { guard } from "./hierarchy";
+import { assertEntryEditable } from "./locks";
 import { nowIso } from "./accounts";
 import { badRequest } from "./errors";
 import {
@@ -322,6 +324,9 @@ export async function applyTimeImport(
   rows: ImportRow[],
   actorAccountId: string,
 ): Promise<ImportStats> {
+  const { access } = await guard(env, {kind:"session",accountId:actorAccountId}, {
+    tenantId:project.tenant_id,workspaceId:project.workspace_id,teamId:project.team_id,projectId:project.id,
+  }, "write");
   const provider = `import:${format}`;
   const stats: ImportStats = {
     rows: rows.length,
@@ -354,7 +359,7 @@ export async function applyTimeImport(
         sortOrder: 0,
         estimateMinutes: null,
       },
-      { accountId: actorAccountId, admin: true },
+      { accountId: actorAccountId, admin: access.admin },
     );
     byTitle.set(title, task);
     stats.created_tasks++;
@@ -378,6 +383,9 @@ export async function applyTimeImport(
       continue;
     }
     try {
+      // Reject locked/submitted dates before creating associated tasks.
+      await assertEntryEditable(env, {tenantId:project.tenant_id,entryAccountId:actorAccountId,
+        actorAccountId,actorIsAdmin:access.admin,startedAts:[row.startedAt]});
       const task = await findOrCreateTask(row.taskTitle.slice(0, 300));
       const entry = await insertEntry(
         env,
@@ -391,7 +399,7 @@ export async function applyTimeImport(
           durationSeconds: row.durationSeconds,
           noteEnc: null,
         },
-        { accountId: actorAccountId, admin: true },
+        { accountId: actorAccountId, admin: access.admin },
       );
       await recordExternalItem(env, {
         tenantId: project.tenant_id,
@@ -418,6 +426,9 @@ export async function runImport(
   content: string,
   actorAccountId: string,
 ): Promise<{ run: IntegrationSyncRunRow; stats: ImportStats }> {
+  const { access } = await guard(env, {kind:"session",accountId:actorAccountId}, {
+    tenantId:project.tenant_id,workspaceId:project.workspace_id,teamId:project.team_id,projectId:project.id,
+  }, "write");
   const provider = `import:${format}`;
   try {
     const rows =
@@ -458,3 +469,4 @@ export async function runImport(
     };
   }
 }
+

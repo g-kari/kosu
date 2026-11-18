@@ -30,8 +30,9 @@
  *   GET         /api/v1/admin/overview            (operator, session only)
  */
 import { Hono } from "hono";
+import { guardAutomationScope, guardStoredAutomationScope } from "../automation-access";
 import { nowIso } from "../accounts";
-import { badRequest, forbidden, notFound } from "../errors";
+import { ApiError, badRequest, forbidden, notFound } from "../errors";
 import {
   guard,
   loadProject,
@@ -60,6 +61,7 @@ import {
   instantiateProjectTemplate,
   listProjectTemplates,
   publicTemplate,
+  guardTemplateAccess,
 } from "../project-templates";
 import {
   getDefinition,
@@ -153,7 +155,12 @@ phase5Routes.get(`${TENANT_PATH}/automation-rules`, async (c) => {
   await loadTenant(c.env, tenantId);
   await guard(c.env, principal, { tenantId }, "read");
   const rules = await listRules(c.env, tenantId);
-  return c.json({ rules: rules.map(publicRule) });
+  const visible = [];
+  for (const row of rules) {
+    try { await guardStoredAutomationScope(c.env,principal,tenantId,row.project_id,"read"); visible.push(row); }
+    catch(error) { if (!(error instanceof ApiError) || ![403,404].includes(error.status)) throw error; }
+  }
+  return c.json({ rules: visible.map(publicRule) });
 });
 
 phase5Routes.post(`${TENANT_PATH}/automation-rules`, async (c) => {
@@ -163,14 +170,7 @@ phase5Routes.post(`${TENANT_PATH}/automation-rules`, async (c) => {
   await loadTenant(c.env, tenantId);
   await guard(c.env, principal, { tenantId }, "write");
   const input = parseRuleBody(body);
-  if (input.projectId) {
-    const project = await c.env.DB.prepare(
-      "SELECT id FROM projects WHERE id = ?1 AND tenant_id = ?2 AND deleted_at IS NULL",
-    )
-      .bind(input.projectId, tenantId)
-      .first<{ id: string }>();
-    if (!project) throw notFound("Project not found");
-  }
+  await guardAutomationScope(c.env,principal,tenantId,input.projectId,"admin");
   const row = await insertRule(c.env, tenantId, input, principal.accountId);
   return c.json({ rule: publicRule(row) }, 201);
 });
@@ -182,6 +182,7 @@ phase5Routes.get(`${TENANT_PATH}/automation-rules/:ruleId`, async (c) => {
   await guard(c.env, principal, { tenantId }, "read");
   const row = await getRule(c.env, tenantId, c.req.param("ruleId") as string);
   if (!row) throw notFound("Automation rule not found");
+  await guardStoredAutomationScope(c.env,principal,tenantId,row.project_id,"read");
   return c.json({ rule: publicRule(row) });
 });
 
@@ -194,6 +195,8 @@ phase5Routes.patch(`${TENANT_PATH}/automation-rules/:ruleId`, async (c) => {
   const row = await getRule(c.env, tenantId, c.req.param("ruleId") as string);
   if (!row) throw notFound("Automation rule not found");
   const input = parseRuleBody(body);
+  await guardStoredAutomationScope(c.env,principal,tenantId,row.project_id,"admin");
+  await guardAutomationScope(c.env,principal,tenantId,input.projectId,"admin");
   const next = await updateRule(c.env, row, input);
   return c.json({ rule: publicRule(next) });
 });
@@ -205,6 +208,7 @@ phase5Routes.delete(`${TENANT_PATH}/automation-rules/:ruleId`, async (c) => {
   await guard(c.env, principal, { tenantId }, "write");
   const row = await getRule(c.env, tenantId, c.req.param("ruleId") as string);
   if (!row) throw notFound("Automation rule not found");
+  await guardStoredAutomationScope(c.env,principal,tenantId,row.project_id,"admin");
   await deleteRule(c.env, row);
   return c.json({ ok: true });
 });
@@ -213,7 +217,7 @@ phase5Routes.get(`${TENANT_PATH}/automation-runs`, async (c) => {
   const tenantId = c.req.param("tenantId") as string;
   const principal = await auth(c, tenantId);
   await loadTenant(c.env, tenantId);
-  await guard(c.env, principal, { tenantId }, "read");
+  await guard(c.env, principal, { tenantId }, "admin");
   const raw = c.req.query("limit");
   const limit = raw ? Math.min(200, Math.max(1, Number(raw) || 50)) : 50;
   return c.json({ runs: await listRuns(c.env, tenantId, limit) });
@@ -229,7 +233,12 @@ phase5Routes.get(`${TENANT_PATH}/project-templates`, async (c) => {
   await loadTenant(c.env, tenantId);
   await guard(c.env, principal, { tenantId }, "read");
   const templates = await listProjectTemplates(c.env, tenantId);
-  return c.json({ templates: templates.map(publicTemplate) });
+  const visible = [];
+  for (const row of templates) {
+    try { await guardTemplateAccess(c.env,principal,row,"read"); visible.push(row); }
+    catch(error) { if (!(error instanceof ApiError) || ![403,404].includes(error.status)) throw error; }
+  }
+  return c.json({ templates: visible.map(publicTemplate) });
 });
 
 phase5Routes.post(`${TENANT_PATH}/project-templates`, async (c) => {
@@ -274,6 +283,7 @@ phase5Routes.delete(
       tenantId,
       c.req.param("templateId") as string,
     );
+    await guardTemplateAccess(c.env,principal,row,"admin");
     await deleteProjectTemplate(c.env, row);
     return c.json({ ok: true });
   },
@@ -316,11 +326,35 @@ phase5Routes.post(
 /* Report definitions                                                   */
 /* ------------------------------------------------------------------ */
 
+/** Explicit administrator recovery of retained capacity; never automatic cleanup. */
+phase5Routes.get(`${TENANT_PATH}/report-storage`, async(c)=>{
+  const tenantId=c.req.param("tenantId") as string;
+  const principal=await auth(c,tenantId);await loadTenant(c.env,tenantId);
+  await guard(c.env,principal,{tenantId},"admin");
+  const definitions=await c.env.DB.prepare("SELECT id, name, deleted_at FROM report_definitions WHERE tenant_id = ?1").bind(tenantId).all();
+  const runs=await c.env.DB.prepare("SELECT id, definition_id, created_at FROM report_runs WHERE tenant_id = ?1").bind(tenantId).all();
+  return c.json({definitions:definitions.results,runs:runs.results,limits:{definitions:100,runs:1000}});
+});
+phase5Routes.delete(`${TENANT_PATH}/report-storage/:kind/:id`,async(c)=>{
+  const tenantId=c.req.param("tenantId") as string;
+  const principal=await auth(c,tenantId);await loadTenant(c.env,tenantId);
+  await guard(c.env,principal,{tenantId},"admin");
+  if(c.req.query("confirm")!=="permanent") throw badRequest("Explicit permanent deletion confirmation required");
+  const kind=c.req.param("kind"),id=c.req.param("id");
+  if(kind!=="definitions" && kind!=="runs") throw notFound();
+  const table=kind==="definitions"?"report_definitions":"report_runs";
+  const row=await c.env.DB.prepare(`SELECT * FROM ${table} WHERE id = ?1 AND tenant_id = ?2`).bind(id,tenantId).first<{deleted_at?:string|null}>();
+  if(!row) throw notFound();
+  if(kind==="definitions" && !row.deleted_at) throw badRequest("Soft-delete the definition before permanently removing it");
+  await c.env.DB.prepare(`DELETE FROM ${table} WHERE id = ?1 AND tenant_id = ?2${kind==="definitions"?" AND deleted_at IS NOT NULL":""}`).bind(id,tenantId).run();
+  return c.json({ok:true});
+});
+
 phase5Routes.get(`${TENANT_PATH}/report-definitions`, async (c) => {
   const tenantId = c.req.param("tenantId") as string;
   const principal = await auth(c, tenantId);
   await loadTenant(c.env, tenantId);
-  await guard(c.env, principal, { tenantId }, "read");
+  await guard(c.env, principal, { tenantId }, "admin");
   const defs = await listDefinitions(c.env, tenantId);
   return c.json({ definitions: defs.map(publicDefinition) });
 });
@@ -330,7 +364,7 @@ phase5Routes.post(`${TENANT_PATH}/report-definitions`, async (c) => {
   const principal = await auth(c, tenantId);
   const body = await readJsonBody(c);
   await loadTenant(c.env, tenantId);
-  await guard(c.env, principal, { tenantId }, "write");
+  await guard(c.env, principal, { tenantId }, "admin");
   const name = body["name"];
   if (typeof name !== "string" || name.trim() === "" || name.length > 200) {
     throw badRequest('"name" is required (max 200 chars)');
@@ -360,14 +394,14 @@ phase5Routes.patch(
     const principal = await auth(c, tenantId);
     const body = await readJsonBody(c);
     await loadTenant(c.env, tenantId);
-    await guard(c.env, principal, { tenantId }, "write");
+    await guard(c.env, principal, { tenantId }, "admin");
     const row = await getDefinition(
       c.env,
       tenantId,
       c.req.param("defId") as string,
     );
     if (!row) throw notFound("Report definition not found");
-    // Replace semantics via soft-delete + insert keeps history simple.
+    // Update in place: a failed replacement must not delete the existing definition.
     const name =
       typeof body["name"] === "string" && body["name"].trim() !== ""
         ? (body["name"] as string).trim()
@@ -381,18 +415,11 @@ phase5Routes.patch(
       body["definition"] !== undefined
         ? parseDefinition(body["definition"])
         : parseDefinition(row.definition_json);
-    await c.env.DB.prepare(
-      "UPDATE report_definitions SET deleted_at = ?1, updated_at = ?2 WHERE id = ?3",
-    )
-      .bind(nowIso(), nowIso(), row.id)
-      .run();
-    const next = await insertDefinition(c.env, {
-      tenantId,
-      name,
-      definition,
-      schedule,
-      createdBy: principal.accountId,
-    });
+    const now = nowIso();
+    const next = {...row,name,definition_json:JSON.stringify(definition),schedule,updated_at:now,
+      next_run_at:schedule === "off" ? null : now,created_by_account_id:principal.accountId};
+    await c.env.DB.prepare("UPDATE report_definitions SET name = ?1, definition_json = ?2, schedule = ?3, next_run_at = ?4, created_by_account_id = ?5, updated_at = ?6 WHERE id = ?7")
+      .bind(next.name,next.definition_json,next.schedule,next.next_run_at,next.created_by_account_id,now,row.id).run();
     return c.json({ definition: publicDefinition(next) });
   },
 );
@@ -403,7 +430,7 @@ phase5Routes.delete(
     const tenantId = c.req.param("tenantId") as string;
     const principal = await auth(c, tenantId);
     await loadTenant(c.env, tenantId);
-    await guard(c.env, principal, { tenantId }, "write");
+    await guard(c.env, principal, { tenantId }, "admin");
     const row = await getDefinition(
       c.env,
       tenantId,
@@ -425,7 +452,7 @@ phase5Routes.post(
     const tenantId = c.req.param("tenantId") as string;
     const principal = await auth(c, tenantId);
     await loadTenant(c.env, tenantId);
-    await guard(c.env, principal, { tenantId }, "read");
+    await guard(c.env, principal, { tenantId }, "admin");
     const row = await getDefinition(
       c.env,
       tenantId,
@@ -441,7 +468,7 @@ phase5Routes.get(`${TENANT_PATH}/report-definitions/:defId/runs`, async (c) => {
   const tenantId = c.req.param("tenantId") as string;
   const principal = await auth(c, tenantId);
   await loadTenant(c.env, tenantId);
-  await guard(c.env, principal, { tenantId }, "read");
+  await guard(c.env, principal, { tenantId }, "admin");
   const row = await getDefinition(
     c.env,
     tenantId,
@@ -617,7 +644,7 @@ phase5Routes.delete(`${PROJECT_PATH}/share-links/:linkId`, async (c) => {
     { tenantId: a.tenantId, workspaceId: a.workspaceId, teamId: a.teamId, projectId: a.projectId },
     "admin",
   );
-  await revokeShareLink(c.env, a.tenantId, c.req.param("linkId") as string);
+  await revokeShareLink(c.env, a.tenantId, a.projectId, c.req.param("linkId") as string);
   return c.json({ ok: true });
 });
 
@@ -679,6 +706,7 @@ phase5Routes.patch(`${PROJECT_PATH}/intake-forms/:formId`, async (c) => {
   const form = await setIntakeFormEnabled(
     c.env,
     a.tenantId,
+    a.projectId,
     c.req.param("formId") as string,
     body["enabled"],
   );
@@ -695,7 +723,7 @@ phase5Routes.delete(`${PROJECT_PATH}/intake-forms/:formId`, async (c) => {
     { tenantId: a.tenantId, workspaceId: a.workspaceId, teamId: a.teamId, projectId: a.projectId },
     "admin",
   );
-  await revokeIntakeForm(c.env, a.tenantId, c.req.param("formId") as string);
+  await revokeIntakeForm(c.env, a.tenantId, a.projectId, c.req.param("formId") as string);
   return c.json({ ok: true });
 });
 
@@ -890,3 +918,4 @@ phase5Routes.get("/api/v1/admin/overview", async (c) => {
   }
   return c.json(await adminOverview(c.env));
 });
+

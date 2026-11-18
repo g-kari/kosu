@@ -65,7 +65,9 @@ const SERVICE_WORKER = `
 // or file-serving GETs are never cached, and the data cache is
 // purged on logout.
 const CACHE = "kosu-shell-v3";
-const DATA_CACHE = "kosu-data-v1";
+const DATA_CACHE = "kosu-data-v2";
+let authGeneration = 0;
+let authTransitions = 0;
 const SHELL_URLS = ["/app", "/manifest.webmanifest", "/icons/icon.svg", "${STYLE_URL}", "${PALETTE_URL}", "${UI_ASSET_URL}", "${VAULT_ASSET_URL}", "${OFFLINE_URL}"];
 const DATA_DENY = ["encryption-key", "/export", "/attachments/", "/sync/", "format=csv"];
 self.addEventListener("install", (event) => {
@@ -75,30 +77,44 @@ self.addEventListener("install", (event) => {
 });
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k.startsWith("kosu-shell-") && k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())
+    caches.keys().then((keys) => Promise.all(keys.filter((k) => (k.startsWith("kosu-shell-") && k !== CACHE) || (k.startsWith("kosu-data-") && k !== DATA_CACHE)).map((k) => caches.delete(k)))).then(() => self.clients.claim())
   );
 });
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
-  if (url.pathname === "/auth/logout") {
-    event.respondWith(
-      fetch(event.request).then((r) => caches.delete(DATA_CACHE).then(() => r))
-    );
+  if (["/auth/logout", "/auth/login", "/auth/callback"].includes(url.pathname)) {
+    authGeneration++;
+    authTransitions++;
+    event.respondWith((async () => {
+      try {
+        await caches.delete(DATA_CACHE);
+        return await fetch(event.request);
+      } finally {
+        // Both edges invalidate work. Overlapping transitions keep the fence
+        // closed until every auth request has settled, including failures.
+        authGeneration++;
+        try { await caches.delete(DATA_CACHE); }
+        finally { authTransitions--; }
+      }
+    })());
     return;
   }
   if (event.request.method !== "GET") return;
   if (url.pathname.startsWith("/api/v1/")) {
-    if (DATA_DENY.some((s) => (url.pathname + url.search).includes(s))) return;
+    if (event.request.headers.has("authorization") || event.request.cache === "no-store" || url.pathname === "/api/v1/me" || url.pathname.startsWith("/api/v1/me/") || DATA_DENY.some((s) => (url.pathname + url.search).includes(s))) return;
+    if (authTransitions) { event.respondWith(Promise.resolve(new Response("Account transition in progress", {status:409}))); return; }
+    const generation = authGeneration;
     event.respondWith(
       fetch(event.request).then((r) => {
-        if (r.ok) {
+        if (generation !== authGeneration) return new Response("Account context changed", {status:409});
+        if (r.ok && !/no-store|private/i.test(r.headers.get("cache-control") || "")) {
           const copy = r.clone();
-          caches.open(DATA_CACHE).then((cache) => cache.put(event.request, copy));
+          caches.open(DATA_CACHE).then(async (cache) => { if (generation !== authGeneration) return; await cache.put(event.request, copy); });
         }
         return r;
       }).catch(() =>
-        caches.open(DATA_CACHE).then((cache) => cache.match(event.request)).then((hit) =>
-          hit || new Response(JSON.stringify({ error: { message: "offline and no cached data" } }), { status: 503, headers: { "content-type": "application/json" } })
+        generation !== authGeneration ? new Response("Account context changed", {status:409}) : caches.open(DATA_CACHE).then((cache) => cache.match(event.request)).then((hit) =>
+          generation !== authGeneration ? new Response("Account context changed", {status:409}) : hit || new Response(JSON.stringify({ error: { message: "offline and no cached data" } }), { status: 503, headers: { "content-type": "application/json" } })
         )
       )
     );
@@ -396,3 +412,4 @@ public5Routes.post("/intake/:token", async (c) => {
     ),
   );
 });
+

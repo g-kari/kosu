@@ -42,7 +42,17 @@ describe("MemoryLocalDb", () => {
 
 describe("SyncEngine", () => {
   function makeEngine(fetchFn) {
-    return new SyncEngine({ db: new MemoryLocalDb(), fetchFn });
+    const db = new MemoryLocalDb();
+    db.meta.set("scope:tenant-1","test-scope");
+    db.meta.set("sync_account_id","owner");
+    return new SyncEngine({ db, fetchFn: async(path,opts)=>{
+      if(path === "/me") return jsonResponse(200,{account:{id:"owner"}});
+      let response;
+      try { response = await fetchFn(path,opts); }
+      catch(e) { if(!path.includes("/sync/pull")) throw e; response=jsonResponse(200,{changes:[],next_since:0,has_more:false}); }
+      if(path.includes("/sync/pull")) { const data=await response.json(); return jsonResponse(response.status,{...data,scope_token:"test-scope",reset:false}); }
+      return response;
+    } });
   }
 
   it("registers a device, pushes a queued change and bumps the local version", async () => {
@@ -152,3 +162,4 @@ describe("SyncEngine", () => {
     expect(await engine.db.listEntities("task")).toHaveLength(3);
   });
 });
+

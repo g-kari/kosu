@@ -334,37 +334,79 @@ window.KosuUI = (() => {
     vault.exists = v.exists;
     return v;
   }
+  let vaultGeneration = 0;
+  let pendingVault = null;
+  async function commitVaultKey(adk, generation, accountId, verifiedAccountId) {
+    if (generation !== vaultGeneration) throw new Error("暗号化キーの解除が取り消されました");
+    const current = await api("/me", { cache: "no-store" });
+    if (generation !== vaultGeneration) throw new Error("暗号化キーの解除が取り消されました");
+    if (!me || current.account.id !== accountId || verifiedAccountId !== accountId || me.account.id !== accountId) { lock(); throw new Error("アカウントが変更されました"); }
+    vault.adk = adk;
+    try { sessionStorage.setItem("kosu_adk", B64.enc(adk)); sessionStorage.setItem("kosu_adk_owner", accountId); } catch (e) {}
+  }
   async function unlock(code) {
+    const generation = vaultGeneration, accountId = me.account.id;
     const v = await vaultStatus();
     if (!v.exists) throw new Error("暗号化キーが未設定です");
-    await api("/api/v1/me/encryption-key/recover", jsonOpts("POST", { recovery_code: code }));
+    const recovered = await api("/api/v1/me/encryption-key/recover", jsonOpts("POST", { recovery_code: code, expected_account_id: accountId }));
     const kek = await deriveKek(code, B64.dec(v.kdf.salt), v.kdf.iterations);
     const adk = await unpackWith(kek, v.wrapped_key);
     if (adk.length !== 32) throw new Error("鍵の展開に失敗しました");
-    vault.adk = adk;
-    try { sessionStorage.setItem("kosu_adk", B64.enc(adk)); } catch (e) {}
+    await commitVaultKey(adk, generation, accountId, recovered.account_id);
     return true;
   }
   function restoreVault() {
     try {
       const s = sessionStorage.getItem("kosu_adk");
-      if (s) vault.adk = B64.dec(s);
+      if (s && me && sessionStorage.getItem("kosu_adk_owner") === me.account.id) vault.adk = B64.dec(s);
+      else lock();
     } catch (e) {}
   }
-  function lock() {
+  function lock(notifyOtherTabs = false) {
+    vaultGeneration++;
+    if (pendingVault) pendingVault.adk.fill(0);
+    pendingVault = null;
+    const codeOut = document.getElementById ? document.getElementById("vaultCodeOut") : null;
+    if (codeOut) { codeOut.textContent = ""; codeOut.style.display = "none"; }
     vault.adk = null;
-    try { sessionStorage.removeItem("kosu_adk"); } catch (e) {}
+    try { sessionStorage.removeItem("kosu_adk"); sessionStorage.removeItem("kosu_adk_owner"); } catch (e) {}
+    if (notifyOtherTabs) {
+      try { localStorage.setItem("kosu_vault_logout", Date.now() + ":" + Math.random()); } catch (e) {}
+    }
   }
+  async function verifyVaultOwner() {
+    if (!vault.adk) return;
+    try {
+      const current = await api("/me", { cache: "no-store" });
+      if (!me || current.account.id !== me.account.id) throw new Error("アカウントが変更されました。再読み込みしてください");
+    } catch (e) { lock(); throw e; }
+  }
+  if (window.addEventListener) {
+    window.addEventListener("storage", (event) => {
+      if (event.key === "kosu_vault_logout") lock();
+    });
+    window.addEventListener("pageshow", () => { verifyVaultOwner().catch(() => {}); });
+  }
+  if (document.addEventListener) document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) verifyVaultOwner().catch(() => {});
+  });
   async function adkKey() {
+    await verifyVaultOwner();
+    if (!vault.adk) throw new Error("暗号化キーを解除してください");
     return crypto.subtle.importKey("raw", vault.adk, "AES-GCM", false, ["encrypt", "decrypt"]);
   }
   async function encryptText(text) {
     if (!vault.adk) throw new Error("暗号化キーがロックされています");
-    return packWith(await adkKey(), new TextEncoder().encode(String(text)));
+    const generation = vaultGeneration;
+    const result = await packWith(await adkKey(), new TextEncoder().encode(String(text)));
+    if (generation !== vaultGeneration) throw new Error("暗号化処理が取り消されました");
+    return result;
   }
   async function decryptText(stored) {
     if (!vault.adk) throw new Error("暗号化キーがロックされています");
+    const generation = vaultGeneration;
     const bytes = await unpackWith(await adkKey(), stored);
+    if (generation !== vaultGeneration) { bytes.fill(0); throw new Error("復号処理が取り消されました"); }
     return new TextDecoder().decode(bytes);
   }
   async function decryptOrNull(stored) {
@@ -373,7 +415,8 @@ window.KosuUI = (() => {
     if (!vault.adk) return null;
     try { return await decryptText(stored); } catch (e) { return null; }
   }
-  async function createVault() {
+  async function prepareVault() {
+    const generation = vaultGeneration, accountId = me.account.id;
     const adk = crypto.getRandomValues(new Uint8Array(32));
     const raw = crypto.getRandomValues(new Uint8Array(20));
     let bits = "";
@@ -386,7 +429,16 @@ window.KosuUI = (() => {
     const iterations = 210000;
     const kek = await deriveKek(code, salt, iterations);
     const wrapped = await packWith(kek, adk);
-    await api("/api/v1/me/encryption-key", {
+    const current = await api("/me", { cache: "no-store" });
+    if (generation !== vaultGeneration || current.account.id !== accountId) { adk.fill(0); throw new Error("アカウントが変更されました"); }
+    pendingVault = {adk,code,salt,iterations,wrapped,generation,accountId};
+    return code;
+  }
+  async function createVault(saved) {
+    if (saved !== true || !pendingVault) throw new Error("先に復旧コードを保存してください");
+    const {adk,code,salt,iterations,wrapped,generation,accountId} = pendingVault;
+    if (generation !== vaultGeneration) throw new Error("キーの作成が取り消されました");
+    const created = await api("/api/v1/me/encryption-key", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -394,18 +446,20 @@ window.KosuUI = (() => {
         kdf_salt: B64.enc(salt),
         kdf_iterations: iterations,
         recovery_code: code,
+        expected_account_id: accountId,
       }),
     });
-    vault.adk = adk;
+    await commitVaultKey(adk, generation, accountId, created.account_id);
+    pendingVault = null;
     vault.exists = true;
-    try { sessionStorage.setItem("kosu_adk", B64.enc(adk)); } catch (e) {}
     return code;
   }
 
   /* ---------------- boot ------------------------------------------ */
   async function boot() {
+    try { await initContext(); } catch (e) { lock(); throw e; }
     restoreVault();
-    await initContext();
+    await verifyVaultOwner();
     initChrome();
   }
   function onReady(fn) {
@@ -428,7 +482,7 @@ window.KosuUI = (() => {
     me: () => me,
     ctx: () => ctx,
     members, memberName,
-    vault, vaultStatus, unlock, lock, createVault,
+    vault, vaultStatus, unlock, lock, prepareVault, createVault,
     encryptText, decryptText, decryptOrNull,
     refreshTimerChip,
     onReady,
@@ -504,6 +558,7 @@ ${inner}
   const script =
     `
 document.getElementById("logoutBtn").onclick = async () => {
+  window.KosuUI.lock(true);
   try { await fetch("/auth/logout", { method: "POST" }); } catch (e) {}
   location.href = "/";
 };
@@ -529,10 +584,11 @@ const VAULT_PANEL_HTML = `
 <button type="button" id="vaultUnlock">ロック解除</button></p>
 <p id="vaultCreateRow" style="display:none">
 <button type="button" id="vaultCreate">暗号化キーを作成する</button>
-<span class="muted">作成すると復旧コードを1回だけ表示します。必ず控えてください。</span></p>
+<span class="muted">先に復旧コードを表示します。保存を確認してからキーを作成します。</span></p>
 <p id="vaultLockRow" style="display:none">
 <button type="button" class="secondary" id="vaultLock">ロックする</button></p>
 <p id="vaultCodeOut" class="warn" style="display:none"></p>
+<p id="vaultConfirmRow" style="display:none"><label><input type="checkbox" id="vaultCodeSaved">復旧コードを安全な場所に保存しました</label> <button type="button" id="vaultCreateConfirm">保存したコードでキーを作成する</button></p>
 </div>`;
 
 export const VAULT_PANEL_SCRIPT = `
@@ -569,13 +625,24 @@ async function initVaultPanel(ui) {
   };
   $("vaultCreate").onclick = async () => {
     try {
-      const code = await ui.createVault();
+      const code = await ui.prepareVault();
       const out = $("vaultCodeOut");
       out.style.display = "";
-      out.textContent = "復旧コード: " + code + "（この画面を離れる前に必ず控えてください）";
+      out.textContent = "復旧コード: " + code + "（まだキーは作成されていません。先にコードを保存してください）";
+      $("vaultCodeSaved").checked = false;
+      $("vaultConfirmRow").style.display = "";
+    } catch (e) { $("msg").textContent = "コードの準備に失敗しました: " + e.message; }
+  };
+  $("vaultCreateConfirm").onclick = async () => {
+    if (!$("vaultCodeSaved").checked) { $("msg").textContent = "先に復旧コードを保存してください"; return; }
+    try {
+      await ui.createVault(true);
+      $("vaultConfirmRow").style.display = "none";
+      $("vaultCodeOut").textContent = "";
+      $("vaultCodeOut").style.display = "none";
       await render();
       if (typeof window.kosuOnVaultChange === "function") await window.kosuOnVaultChange();
-    } catch (e) { $("msg").textContent = "キーの作成に失敗しました: " + e.message; }
+    } catch (e) { $("msg").textContent = "作成状態を確認してください。作成済みの場合は保存した復旧コードで解除できます: " + e.message; }
   };
   $("vaultLock").onclick = async () => {
     ui.lock();
@@ -2101,3 +2168,4 @@ uiRoutes.get("/app/settings", async (c) => {
     appPage(prefs, "settings", t(locale, "settings.title"), t(locale, "settings.title"), SETTINGS_HTML, script, { vault: true }),
   );
 });
+

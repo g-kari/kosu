@@ -1,3 +1,4 @@
+import { canReadSyncEntity, guardSyncEntity } from "../sync-access";
 /**
  * Phase-3 ops API: aggregated reports (+ CSV export and a printable
  * HTML view), member rates, project budgets, leave records,
@@ -836,7 +837,11 @@ opsRoutes.get(`${TENANT_PATH}/sync-conflicts`, async (c) => {
         (status === "all" || r.status === status),
     )
     .sort((a, b) => b.created_at.localeCompare(a.created_at));
-  return c.json({ conflicts: rows.map((r) => publicConflict(r)) });
+  const visible = [];
+  for (const row of rows) {
+    if (await canReadSyncEntity(c.env, principal, tenantId, row.entity_type, row.entity_id)) visible.push(row);
+  }
+  return c.json({ conflicts: visible.map((r) => publicConflict(r)) });
 });
 
 async function loadConflictForActor(
@@ -850,6 +855,7 @@ async function loadConflictForActor(
   if (!admin && row.account_id !== principal.accountId) {
     throw notFound("Sync conflict not found");
   }
+  await guardSyncEntity(c.env, principal, tenantId, row.entity_type, row.entity_id, "read");
   return row;
 }
 
@@ -896,3 +902,4 @@ opsRoutes.post(`${TENANT_PATH}/sync-conflicts/:conflictId/resolve`, async (c) =>
   });
   return c.json({ conflict: publicConflict(resolved, true) });
 });
+

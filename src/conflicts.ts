@@ -9,6 +9,7 @@
  * server state as a fresh change, so versions keep moving forward and
  * the change log stays truthful).
  */
+import { guardSyncEntity } from "./sync-access";
 import { nowIso } from "./accounts";
 import { badRequest, notFound } from "./errors";
 import { dispatchNotifications } from "./notify";
@@ -107,6 +108,7 @@ export async function resolveConflict(
   row: SyncConflictRow,
   choice: "server" | "client",
 ): Promise<SyncConflictRow> {
+  await guardSyncEntity(env, principal, row.tenant_id, row.entity_type, row.entity_id, "write");
   if (row.status !== "open") {
     throw badRequest("This conflict is already resolved");
   }
@@ -155,7 +157,8 @@ async function applyClientPayload(
   const clientPayload = row.client_payload
     ? (JSON.parse(row.client_payload) as Record<string, unknown>)
     : null;
-  const source = { accountId: principal.accountId, admin: true };
+  const { access } = await guardSyncEntity(env, principal, row.tenant_id, row.entity_type, row.entity_id, "write");
+  const source = { accountId: principal.accountId, admin: access.admin };
   switch (row.entity_type) {
     case "task": {
       const current = await loadTaskAny(env, row.entity_id);
@@ -232,3 +235,4 @@ export async function notifyConflictRecorded(
     relatedId: conflict.id,
   });
 }
+

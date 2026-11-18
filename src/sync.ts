@@ -8,11 +8,12 @@
  * payloads are recorded in sync_conflicts for later review. New entities
  * are pushed with base_version 0.
  */
+import { canReadSyncEntity, guardSyncEntity } from "./sync-access";
 import { nowIso } from "./accounts";
 import { tenantAdminIds } from "./approvals";
 import { notifyConflictRecorded } from "./conflicts";
-import { badRequest, forbidden, notFound } from "./errors";
-import { guard, loadProject, loadWorkspace } from "./hierarchy";
+import { badRequest, forbidden, notFound, conflict } from "./errors";
+import { guard, loadProject, loadWorkspace, loadTeam, loadTenant } from "./hierarchy";
 import {
   isSyncEntityType,
   lastSeq,
@@ -44,7 +45,7 @@ import {
   softDeleteTask,
   type TaskInput,
 } from "./tasks";
-import { randomId } from "./tokens";
+import { randomId, sha256Hex } from "./tokens";
 import type {
   Env,
   MilestoneRow,
@@ -211,6 +212,9 @@ async function loadProjectById(
     .first<ProjectRow>();
   if (!row) throw notFound("Project not found");
   // Verify the full ancestry is alive and consistent.
+  await loadTenant(env,row.tenant_id);
+  await loadWorkspace(env,row.tenant_id,row.workspace_id);
+  await loadTeam(env,row.workspace_id,row.team_id);
   await loadProject(env, row.team_id, projectId);
   return row;
 }
@@ -316,6 +320,7 @@ async function applyCreate(
       }
       // Throws 404 unless the workspace belongs to this tenant.
       await loadWorkspace(env, tenantId, raw);
+      await guard(env, principal, { tenantId, workspaceId: raw }, "write");
       workspaceId = raw;
     }
     const row = await insertEntry(
@@ -532,6 +537,8 @@ export async function applyPush(
       continue;
     }
     if (existing.tenant_id !== tenantId) throw notFound("Entity not found");
+    await guardSyncEntity(env, principal, tenantId, entityType, change.entity_id, "write");
+    if (entityType === "time_entry" && (existing as TimeEntryRow).account_id !== principal.accountId) throw forbidden("Time entries can only be changed by their owner");
     const serverVersion = Number(existing.version);
     if (change.base_version !== serverVersion) {
       // Server wins. Record both sides for the phase-3 resolution UI.
@@ -595,19 +602,46 @@ export async function applyPush(
   return { results, lastSeq: await lastSeq(env, tenantId) };
 }
 
+/** Authorization epoch includes memberships, live ancestry, and purged entity identities.
+ * Only its digest is returned; a change invalidates incremental client mirrors. */
+export async function syncScopeToken(env: Env, principal: Principal, tenantId: string) {
+  const state: unknown[] = [principal.accountId, tenantId];
+  for (const table of ["tenant_members", "workspace_members", "team_members", "project_members"]) {
+    const rows = await env.DB.prepare(`SELECT * FROM ${table} WHERE account_id = ?1`).bind(principal.accountId).all<Record<string,unknown>>();
+    state.push(rows.results.map(r=>JSON.stringify(r)).sort());
+  }
+  for (const table of ["tenants", "workspaces", "teams", "projects"]) {
+    const rows = await env.DB.prepare(`SELECT * FROM ${table} WHERE ${table === "tenants" ? "id" : "tenant_id"} = ?1`).bind(tenantId).all<Record<string,unknown>>();
+    state.push(rows.results.map(r=>JSON.stringify([r.id,r.workspace_id,r.team_id,r.project_id,r.task_id,r.deleted_at])).sort());
+  }
+  const deletions = await env.DB.prepare("SELECT seq FROM sync_changes WHERE tenant_id = ?1 AND op = ?2 ORDER BY seq DESC LIMIT 1").bind(tenantId,"delete").all<{seq:number}>();
+  state.push(deletions.results);
+  const epoch=await env.DB.prepare("SELECT revision FROM sync_access_epochs WHERE tenant_id = ?1").bind(tenantId).first<{revision:number}>();
+  state.push(epoch?.revision ?? 0);
+  return sha256Hex(JSON.stringify(state));
+}
+
 export async function syncPull(
   env: Env,
+  principal: Principal,
   tenantId: string,
   sinceSeq: number,
   limit: number,
+  scopeToken?: string,
 ) {
+  const scope = await syncScopeToken(env, principal, tenantId);
+  if (scopeToken !== undefined && scopeToken !== scope) return {changes: [], next_since: 0, last_seq: await lastSeq(env,tenantId), has_more: true, reset: true, scope_token: scope};
   const { changes, lastSeq: current, hasMore } = await pullChanges(
     env,
     tenantId,
     sinceSeq,
     limit,
   );
-  const mapped = changes.map((row) => ({
+  const visible = [];
+  for (const row of changes) {
+    if (await canReadSyncEntity(env, principal, tenantId, row.entity_type, row.entity_id)) visible.push(row);
+  }
+  const mapped = visible.map((row) => ({
     seq: Number(row.seq),
     entity_type: row.entity_type,
     entity_id: row.entity_id,
@@ -617,12 +651,15 @@ export async function syncPull(
     device_id: row.device_id,
     created_at: row.created_at,
   }));
-  const last = mapped[mapped.length - 1];
+  if (scope !== await syncScopeToken(env,principal,tenantId)) throw conflict("SYNC_SCOPE_CHANGED", "Access changed during synchronization; retry without applying this page");
+  const last = changes[changes.length - 1];
   return {
     changes: mapped,
-    // Cursor for the next page: the seq of the last returned change.
+    reset: false,
+    scope_token: scope,
+    // Advance over inspected changes even when this page is entirely filtered.
     // (last_seq alone is the tenant-wide head and would skip pages.)
-    next_since: last ? last.seq : sinceSeq,
+    next_since: last ? Number(last.seq) : sinceSeq,
     last_seq: current,
     has_more: hasMore,
   };
@@ -678,3 +715,4 @@ export async function listConflicts(env: Env, tenantId: string) {
     created_at: row.created_at,
   }));
 }
+

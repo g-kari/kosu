@@ -11,12 +11,14 @@
  * reusing the phase-2 insert functions so sync changes are recorded.
  */
 
+import { guardAutomationScope, guardStoredAutomationScope } from "./automation-access";
 import { randomId } from "./tokens";
 import { badRequest, notFound } from "./errors";
 import { nowIso } from "./accounts";
 import { addDays, isDateString } from "./timecalc";
 import {
   createProject,
+  guard as hierarchyGuard,
   loadProject,
   loadWorkspace,
 } from "./hierarchy";
@@ -61,6 +63,7 @@ interface TemplateTask {
 
 interface TemplatePayload {
   version: 1;
+  source_project_id?: string;
   project: { name: string; color: string | null };
   base_date: string;
   tasks: TemplateTask[];
@@ -88,6 +91,15 @@ export function publicTemplate(
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
+}
+
+/** Legacy templates without source evidence are available only to tenant administrators. */
+export async function guardTemplateAccess(env:Env,principal:Principal,row:ProjectTemplateRow,need:"read"|"admin") {
+  const tenant = await hierarchyGuard(env,principal,{tenantId:row.tenant_id},"read");
+  if (tenant.access.admin) return guardStoredAutomationScope(env,principal,row.tenant_id,null,need);
+  let source: unknown;
+  try { source = JSON.parse(row.payload_json).source_project_id; } catch { throw badRequest("Template payload is corrupted"); }
+  return guardAutomationScope(env,principal,row.tenant_id,typeof source === "string" ? source : null,need);
 }
 
 export async function listProjectTemplates(
@@ -123,6 +135,7 @@ export async function captureProjectTemplate(
   name: string,
   createdBy: string,
 ): Promise<ProjectTemplateRow> {
+  await guardAutomationScope(env,{kind:"session",accountId:createdBy},project.tenant_id,project.id,"admin");
   const { results: taskRows } = await env.DB.prepare(
     "SELECT * FROM tasks WHERE project_id = ?1 AND deleted_at IS NULL",
   )
@@ -176,6 +189,7 @@ export async function captureProjectTemplate(
 
   const payload: TemplatePayload = {
     version: 1,
+    source_project_id: project.id,
     project: { name: project.name, color: project.color },
     base_date: baseDate,
     tasks: templateTasks,
@@ -229,6 +243,7 @@ export async function instantiateProjectTemplate(
   },
 ): Promise<{ project: ProjectRow; taskCount: number }> {
   const template = await getProjectTemplate(env, args.tenantId, args.templateId);
+  await guardTemplateAccess(env,principal,template,"read");
   let payload: TemplatePayload;
   try {
     payload = JSON.parse(template.payload_json) as TemplatePayload;
@@ -242,6 +257,7 @@ export async function instantiateProjectTemplate(
     .first<TeamRow>();
   if (!team) throw notFound("Team not found");
   const workspace = await loadWorkspace(env, args.tenantId, team.workspace_id);
+  await hierarchyGuard(env,principal,{tenantId:args.tenantId,workspaceId:workspace.id,teamId:team.id},"write");
   const startDate =
     args.startDate && isDateString(args.startDate)
       ? args.startDate
@@ -315,3 +331,4 @@ export async function instantiateProjectTemplate(
   const fresh = await loadProject(env, team.id, project.id);
   return { project: fresh, taskCount: idByKey.size };
 }
+

@@ -218,7 +218,7 @@ export function shell(
 <meta name="theme-color" content="#2456c8">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
-<title>${title} — Kosu</title><link rel="stylesheet" href="${STYLE_URL}"></head>
+<title>${title.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")} — Kosu</title><link rel="stylesheet" href="${STYLE_URL}"></head>
 <body${opts.wide ? ' class="wide"' : ""}><a class="skip" href="#main">本文へ移動</a><main id="main">${body}</main><footer class="site-footer"><span>Kosu</span><a href="/terms">${t(locale, "nav.terms")}</a><a href="/privacy">${t(locale, "nav.privacy")}</a><a href="/health">/health (JSON)</a></footer>${palette}${assetTags}<script>${script}</script>${chrome}${sw}</body></html>`;
 }
 
@@ -1074,3 +1074,4 @@ async function api(path, opts) { const r = await fetch(path, opts); if (!r.ok) t
     : "";
   return c.html(shell("招待", body, script));
 });
+

@@ -309,7 +309,7 @@ export async function deliverSlackNotification(
   fetcher: Fetcher = (url, init) => fetch(url, init),
 ): Promise<boolean> {
   const conn = await env.DB.prepare(
-    "SELECT * FROM integration_connections WHERE tenant_id = ?1 AND provider = ?2 AND enabled = ?3 AND secret_enc IS NOT NULL ORDER BY created_at ASC",
+    "SELECT * FROM integration_connections WHERE tenant_id = ?1 AND provider = ?2 AND enabled = ?3 AND deleted_at IS NULL AND secret_enc IS NOT NULL ORDER BY created_at ASC",
   )
     .bind(event.tenantId, "slack", 1)
     .first<IntegrationConnectionRow>();
@@ -637,3 +637,4 @@ export async function runDeadlineReminders(
   }
   return { tenants: tenants.results.length, events };
 }
+

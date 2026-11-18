@@ -1002,12 +1002,11 @@ workRoutes.delete(`${TENANT_PATH}/attachments/:attachmentId`, async (c) => {
   await loadTenant(c.env, tenantId);
   const row = await loadAttachment(c.env, c.req.param("attachmentId") as string);
   if (row.tenant_id !== tenantId) throw notFound("Attachment not found");
-  if (row.account_id !== principal.accountId) {
-    const task = await loadTaskAny(c.env, row.task_id);
-    if (!task || !task.project_id) throw notFound("Task not found");
-    const project = await loadProjectScoped(c, task.project_id);
-    await guardProjectRow(c, principal, project, "admin");
-  }
+  const task = await loadTaskAny(c.env, row.task_id);
+  if (!task || !task.project_id) throw notFound("Task not found");
+  const project = await loadProjectScoped(c, task.project_id);
+  await guardProjectRow(c, principal, project,
+    row.account_id === principal.accountId ? "write" : "admin");
   await deleteAttachment(c.env, row);
   return c.json({ ok: true });
 });
@@ -1368,3 +1367,4 @@ workRoutes.get("/api/v1/me/recent", async (c) => {
   const items = await listRecent(c.env, principal.accountId, tenantId);
   return c.json({ items });
 });
+

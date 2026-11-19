@@ -101,3 +101,11 @@ export function assertSameOriginForSessionMutation(c: CtxLike): void {
     throw forbidden("Cross-origin mutation rejected");
   }
 }
+
+
+/** Tenant-scoped API keys never authorize account-global state or membership expansion. */
+export async function requireSessionPrincipal(c: CtxLike): Promise<Principal> {
+  const principal = await requirePrincipal(c);
+  if (principal.kind !== "session") throw forbidden("A browser session is required for account operations");
+  return principal;
+}

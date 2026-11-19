@@ -1,6 +1,6 @@
 /** Shared helpers for the phase-2 route modules. */
 import type { Context } from "hono";
-import { assertKeyTenant, requirePrincipal } from "../auth";
+import { assertKeyTenant, requirePrincipal, requireSessionPrincipal } from "../auth";
 import { badRequest } from "../errors";
 import type { Env, Principal, Variables } from "../types";
 
@@ -27,7 +27,7 @@ export async function readJsonBody(
 }
 
 export async function auth(c: Ctx, tenantId?: string): Promise<Principal> {
-  const principal = await requirePrincipal(c);
+  const principal = tenantId ? await requirePrincipal(c) : await requireSessionPrincipal(c);
   if (tenantId) assertKeyTenant(principal, tenantId);
   return principal;
 }
@@ -48,3 +48,4 @@ export function queryInt(
   }
   return value;
 }
+

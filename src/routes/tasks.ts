@@ -784,8 +784,8 @@ async function loadProjectScoped(c: Ctx, projectId: string) {
 
 taskRoutes.get("/api/v1/projects/:projectId/gantt", async (c) => {
   const projectId = c.req.param("projectId") as string;
-  const principal = await auth(c);
   const project = await loadProjectScoped(c, projectId);
+  const principal = await auth(c, project.tenant_id);
   await guard(
     c.env,
     principal,
@@ -850,3 +850,4 @@ taskRoutes.get(`${TENANT_PATH}/dashboard`, async (c) => {
     ),
   );
 });
+

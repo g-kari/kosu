@@ -32,11 +32,11 @@ import { t, type Locale } from "../i18n";
 import type { UserPrefs } from "../prefs";
 import type { Env, Variables } from "../types";
 import type { Ctx } from "./http";
-import { prefsFor, sessionAccountId, shell } from "./pages";
+import { OFFLINE_URL, assetUrl, prefsFor, sessionAccountId, shell } from "./pages";
 
 export const uiRoutes = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-export const APP_VERSION = "0.7.0";
+export const APP_VERSION = "0.12.0";
 
 /** The service identity JSON (moved from `GET /`, kept for compat). */
 export const SERVICE_IDENTITY = {
@@ -50,17 +50,49 @@ export const SERVICE_IDENTITY = {
 /* Shared client library (context, chrome, vault)                       */
 /* ------------------------------------------------------------------ */
 
-const UI_SCRIPT = `
+export const UI_SCRIPT = `
 window.KosuUI = (() => {
   const $ = (id) => document.getElementById(id);
-  async function api(path, opts) {
-    const r = await fetch(path, opts);
-    if (!r.ok) {
-      const j = await r.json().catch(() => null);
-      throw new Error((j && j.error && j.error.message) || ("HTTP " + r.status));
+  let busyCount = 0;
+  function setBusy(delta) {
+    busyCount = Math.max(0, busyCount + delta);
+    let bar = document.getElementById("busybar");
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.id = "busybar";
+      bar.setAttribute("aria-hidden", "true");
+      document.body.appendChild(bar);
     }
-    if (r.status === 204) return {};
-    return r.json();
+    bar.style.display = busyCount > 0 ? "" : "none";
+  }
+  let toastTimer = null;
+  function toast(text) {
+    let el = document.getElementById("kosuToast");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "kosuToast";
+      el.className = "toast";
+      el.setAttribute("role", "status");
+      document.body.appendChild(el);
+    }
+    el.textContent = text;
+    el.style.display = "";
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.style.display = "none"; }, 3200);
+  }
+  async function api(path, opts) {
+    setBusy(1);
+    try {
+      const r = await fetch(path, opts);
+      if (!r.ok) {
+        const j = await r.json().catch(() => null);
+        throw new Error((j && j.error && j.error.message) || ("HTTP " + r.status));
+      }
+      if (r.status === 204) return {};
+      return r.json();
+    } finally {
+      setBusy(-1);
+    }
   }
   const jsonOpts = (method, body) => ({
     method,
@@ -171,9 +203,12 @@ window.KosuUI = (() => {
     if (!runningEntry) { chip.style.display = "none"; chip.innerHTML = ""; return; }
     chip.style.display = "";
     chip.innerHTML = "";
+    const dot = document.createElement("span");
+    dot.className = "timer-dot";
+    dot.setAttribute("aria-hidden", "true");
     const label = document.createElement("span");
     label.id = "timerElapsed";
-    label.textContent = "⏱ " + fmtHMS((Date.now() - Date.parse(runningEntry.started_at)) / 1000);
+    label.textContent = fmtHMS((Date.now() - Date.parse(runningEntry.started_at)) / 1000);
     const b = document.createElement("button");
     b.type = "button";
     b.textContent = "停止";
@@ -185,7 +220,7 @@ window.KosuUI = (() => {
         location.reload();
       } catch (e) { alert(e.message); }
     };
-    chip.append(label, b);
+    chip.append(dot, label, b);
   }
   async function refreshTimerChip() {
     const chip = $("timerChip");
@@ -249,7 +284,7 @@ window.KosuUI = (() => {
     setInterval(() => {
       if (runningEntry) {
         const el = $("timerElapsed");
-        if (el) el.textContent = "⏱ " + fmtHMS((Date.now() - Date.parse(runningEntry.started_at)) / 1000);
+        if (el) el.textContent = fmtHMS((Date.now() - Date.parse(runningEntry.started_at)) / 1000);
       }
     }, 1000);
   }
@@ -299,37 +334,79 @@ window.KosuUI = (() => {
     vault.exists = v.exists;
     return v;
   }
+  let vaultGeneration = 0;
+  let pendingVault = null;
+  async function commitVaultKey(adk, generation, accountId, verifiedAccountId) {
+    if (generation !== vaultGeneration) throw new Error("暗号化キーの解除が取り消されました");
+    const current = await api("/me", { cache: "no-store" });
+    if (generation !== vaultGeneration) throw new Error("暗号化キーの解除が取り消されました");
+    if (!me || current.account.id !== accountId || verifiedAccountId !== accountId || me.account.id !== accountId) { lock(); throw new Error("アカウントが変更されました"); }
+    vault.adk = adk;
+    try { sessionStorage.setItem("kosu_adk", B64.enc(adk)); sessionStorage.setItem("kosu_adk_owner", accountId); } catch (e) {}
+  }
   async function unlock(code) {
+    const generation = vaultGeneration, accountId = me.account.id;
     const v = await vaultStatus();
     if (!v.exists) throw new Error("暗号化キーが未設定です");
-    await api("/api/v1/me/encryption-key/recover", jsonOpts("POST", { recovery_code: code }));
+    const recovered = await api("/api/v1/me/encryption-key/recover", jsonOpts("POST", { recovery_code: code, expected_account_id: accountId }));
     const kek = await deriveKek(code, B64.dec(v.kdf.salt), v.kdf.iterations);
     const adk = await unpackWith(kek, v.wrapped_key);
     if (adk.length !== 32) throw new Error("鍵の展開に失敗しました");
-    vault.adk = adk;
-    try { sessionStorage.setItem("kosu_adk", B64.enc(adk)); } catch (e) {}
+    await commitVaultKey(adk, generation, accountId, recovered.account_id);
     return true;
   }
   function restoreVault() {
     try {
       const s = sessionStorage.getItem("kosu_adk");
-      if (s) vault.adk = B64.dec(s);
+      if (s && me && sessionStorage.getItem("kosu_adk_owner") === me.account.id) vault.adk = B64.dec(s);
+      else lock();
     } catch (e) {}
   }
-  function lock() {
+  function lock(notifyOtherTabs = false) {
+    vaultGeneration++;
+    if (pendingVault) pendingVault.adk.fill(0);
+    pendingVault = null;
+    const codeOut = document.getElementById ? document.getElementById("vaultCodeOut") : null;
+    if (codeOut) { codeOut.textContent = ""; codeOut.style.display = "none"; }
     vault.adk = null;
-    try { sessionStorage.removeItem("kosu_adk"); } catch (e) {}
+    try { sessionStorage.removeItem("kosu_adk"); sessionStorage.removeItem("kosu_adk_owner"); } catch (e) {}
+    if (notifyOtherTabs) {
+      try { localStorage.setItem("kosu_vault_logout", Date.now() + ":" + Math.random()); } catch (e) {}
+    }
   }
+  async function verifyVaultOwner() {
+    if (!vault.adk) return;
+    try {
+      const current = await api("/me", { cache: "no-store" });
+      if (!me || current.account.id !== me.account.id) throw new Error("アカウントが変更されました。再読み込みしてください");
+    } catch (e) { lock(); throw e; }
+  }
+  if (window.addEventListener) {
+    window.addEventListener("storage", (event) => {
+      if (event.key === "kosu_vault_logout") lock();
+    });
+    window.addEventListener("pageshow", () => { verifyVaultOwner().catch(() => {}); });
+  }
+  if (document.addEventListener) document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) verifyVaultOwner().catch(() => {});
+  });
   async function adkKey() {
+    await verifyVaultOwner();
+    if (!vault.adk) throw new Error("暗号化キーを解除してください");
     return crypto.subtle.importKey("raw", vault.adk, "AES-GCM", false, ["encrypt", "decrypt"]);
   }
   async function encryptText(text) {
     if (!vault.adk) throw new Error("暗号化キーがロックされています");
-    return packWith(await adkKey(), new TextEncoder().encode(String(text)));
+    const generation = vaultGeneration;
+    const result = await packWith(await adkKey(), new TextEncoder().encode(String(text)));
+    if (generation !== vaultGeneration) throw new Error("暗号化処理が取り消されました");
+    return result;
   }
   async function decryptText(stored) {
     if (!vault.adk) throw new Error("暗号化キーがロックされています");
+    const generation = vaultGeneration;
     const bytes = await unpackWith(await adkKey(), stored);
+    if (generation !== vaultGeneration) { bytes.fill(0); throw new Error("復号処理が取り消されました"); }
     return new TextDecoder().decode(bytes);
   }
   async function decryptOrNull(stored) {
@@ -338,7 +415,8 @@ window.KosuUI = (() => {
     if (!vault.adk) return null;
     try { return await decryptText(stored); } catch (e) { return null; }
   }
-  async function createVault() {
+  async function prepareVault() {
+    const generation = vaultGeneration, accountId = me.account.id;
     const adk = crypto.getRandomValues(new Uint8Array(32));
     const raw = crypto.getRandomValues(new Uint8Array(20));
     let bits = "";
@@ -351,7 +429,16 @@ window.KosuUI = (() => {
     const iterations = 210000;
     const kek = await deriveKek(code, salt, iterations);
     const wrapped = await packWith(kek, adk);
-    await api("/api/v1/me/encryption-key", {
+    const current = await api("/me", { cache: "no-store" });
+    if (generation !== vaultGeneration || current.account.id !== accountId) { adk.fill(0); throw new Error("アカウントが変更されました"); }
+    pendingVault = {adk,code,salt,iterations,wrapped,generation,accountId};
+    return code;
+  }
+  async function createVault(saved) {
+    if (saved !== true || !pendingVault) throw new Error("先に復旧コードを保存してください");
+    const {adk,code,salt,iterations,wrapped,generation,accountId} = pendingVault;
+    if (generation !== vaultGeneration) throw new Error("キーの作成が取り消されました");
+    const created = await api("/api/v1/me/encryption-key", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -359,18 +446,20 @@ window.KosuUI = (() => {
         kdf_salt: B64.enc(salt),
         kdf_iterations: iterations,
         recovery_code: code,
+        expected_account_id: accountId,
       }),
     });
-    vault.adk = adk;
+    await commitVaultKey(adk, generation, accountId, created.account_id);
+    pendingVault = null;
     vault.exists = true;
-    try { sessionStorage.setItem("kosu_adk", B64.enc(adk)); } catch (e) {}
     return code;
   }
 
   /* ---------------- boot ------------------------------------------ */
   async function boot() {
+    try { await initContext(); } catch (e) { lock(); throw e; }
     restoreVault();
-    await initContext();
+    await verifyVaultOwner();
     initChrome();
   }
   function onReady(fn) {
@@ -386,14 +475,14 @@ window.KosuUI = (() => {
     })();
   }
   return {
-    $, api, jsonOpts, fillSelect,
+    $, api, jsonOpts, fillSelect, toast,
     fmtHMS, fmtHM, localDate, todayStr, addDays,
     tenantPath, projectPath, currentProject,
     projects: () => projectsCache,
     me: () => me,
     ctx: () => ctx,
     members, memberName,
-    vault, vaultStatus, unlock, lock, createVault,
+    vault, vaultStatus, unlock, lock, prepareVault, createVault,
     encryptText, decryptText, decryptOrNull,
     refreshTimerChip,
     onReady,
@@ -405,6 +494,9 @@ window.KosuUI = (() => {
 /* App shell (sidebar + topbar)                                         */
 /* ------------------------------------------------------------------ */
 
+/** Shared app script, served as a cacheable external asset (phase 8). */
+export const UI_ASSET_URL = assetUrl("ui", "js", UI_SCRIPT);
+
 type NavKey = "dashboard" | "tasks" | "time" | "gantt" | "reports" | "settings";
 
 function appPage(
@@ -414,6 +506,7 @@ function appPage(
   heading: string,
   inner: string,
   pageScript: string,
+  opts: { vault?: boolean } = {},
 ): string {
   const locale: Locale = prefs.locale;
   const items: Array<[NavKey, string, string]> = [
@@ -427,7 +520,7 @@ function appPage(
   const nav = items
     .map(
       ([key, href, label]) =>
-        `<a href="${href}"${key === active ? ' class="active"' : ""}>${label}</a>`,
+        `<a href="${href}"${key === active ? ' class="active" aria-current="page"' : ""}>${label}</a>`,
     )
     .join("\n");
   const body = `
@@ -448,7 +541,7 @@ ${nav}
 </div>
 </aside>
 <div class="content">
-<div class="topbar">
+<header class="topbar">
 <label>テナント <select id="ctxTenant" aria-label="テナント"></select></label>
 <label>ワークスペース <select id="ctxWorkspace" aria-label="ワークスペース"></select></label>
 <label>プロジェクト <select id="ctxProject" aria-label="プロジェクト"></select></label>
@@ -456,22 +549,29 @@ ${nav}
 <span id="timerChip" class="timer-chip" style="display:none"></span>
 <span class="muted" id="who"></span>
 <button type="button" class="secondary" id="logoutBtn">${t(locale, "nav.logout")}</button>
-</div>
+</header>
 <h1>${heading}</h1>
 ${inner}
 <p id="msg" class="err" role="alert"></p>
 </div>
 </div>`;
   const script =
-    UI_SCRIPT +
     `
 document.getElementById("logoutBtn").onclick = async () => {
+  window.KosuUI.lock(true);
   try { await fetch("/auth/logout", { method: "POST" }); } catch (e) {}
   location.href = "/";
 };
 ` +
     pageScript;
-  return shell(title, body, script, { prefs, appChrome: true, wide: true });
+  return shell(title, body, script, {
+    prefs,
+    appChrome: true,
+    wide: true,
+    scripts: opts.vault
+      ? [OFFLINE_URL, UI_ASSET_URL, VAULT_ASSET_URL]
+      : [OFFLINE_URL, UI_ASSET_URL],
+  });
 }
 
 /** Shared vault control panel (unlock / create / lock) as page HTML. */
@@ -484,13 +584,14 @@ const VAULT_PANEL_HTML = `
 <button type="button" id="vaultUnlock">ロック解除</button></p>
 <p id="vaultCreateRow" style="display:none">
 <button type="button" id="vaultCreate">暗号化キーを作成する</button>
-<span class="muted">作成すると復旧コードを1回だけ表示します。必ず控えてください。</span></p>
+<span class="muted">先に復旧コードを表示します。保存を確認してからキーを作成します。</span></p>
 <p id="vaultLockRow" style="display:none">
 <button type="button" class="secondary" id="vaultLock">ロックする</button></p>
 <p id="vaultCodeOut" class="warn" style="display:none"></p>
+<p id="vaultConfirmRow" style="display:none"><label><input type="checkbox" id="vaultCodeSaved">復旧コードを安全な場所に保存しました</label> <button type="button" id="vaultCreateConfirm">保存したコードでキーを作成する</button></p>
 </div>`;
 
-const VAULT_PANEL_SCRIPT = `
+export const VAULT_PANEL_SCRIPT = `
 async function initVaultPanel(ui) {
   const $ = ui.$;
   async function render() {
@@ -524,13 +625,24 @@ async function initVaultPanel(ui) {
   };
   $("vaultCreate").onclick = async () => {
     try {
-      const code = await ui.createVault();
+      const code = await ui.prepareVault();
       const out = $("vaultCodeOut");
       out.style.display = "";
-      out.textContent = "復旧コード: " + code + "（この画面を離れる前に必ず控えてください）";
+      out.textContent = "復旧コード: " + code + "（まだキーは作成されていません。先にコードを保存してください）";
+      $("vaultCodeSaved").checked = false;
+      $("vaultConfirmRow").style.display = "";
+    } catch (e) { $("msg").textContent = "コードの準備に失敗しました: " + e.message; }
+  };
+  $("vaultCreateConfirm").onclick = async () => {
+    if (!$("vaultCodeSaved").checked) { $("msg").textContent = "先に復旧コードを保存してください"; return; }
+    try {
+      await ui.createVault(true);
+      $("vaultConfirmRow").style.display = "none";
+      $("vaultCodeOut").textContent = "";
+      $("vaultCodeOut").style.display = "none";
       await render();
       if (typeof window.kosuOnVaultChange === "function") await window.kosuOnVaultChange();
-    } catch (e) { $("msg").textContent = "キーの作成に失敗しました: " + e.message; }
+    } catch (e) { $("msg").textContent = "作成状態を確認してください。作成済みの場合は保存した復旧コードで解除できます: " + e.message; }
   };
   $("vaultLock").onclick = async () => {
     ui.lock();
@@ -574,6 +686,21 @@ uiRoutes.get("/", async (c) => {
     ? "Kosu is a local-first time & task tracker: tasks and projects, a timer and manual time entries, Gantt charts and reports — with an MCP endpoint and plugins for your coding tools."
     : "Kosu はローカルファーストの工数・タスク管理サービスです。タスクとプロジェクト、タイマーと手入力の工数、ガントチャートとレポートに加えて、MCP エンドポイントと開発ツール向けプラグインを備えています。"}</p>
 ${cta}
+<svg viewBox="0 0 640 96" width="100%" style="max-width:640px" role="img" aria-label="${en ? "Flow: record time and tasks, encrypt and sync them local-first, then review Gantt charts and reports" : "流れ：工数とタスクを記録し、ローカルファーストで暗号化して同期し、ガントとレポートで確認する"}">
+<rect x="1" y="24" width="188" height="48" fill="none" stroke="#2456c8" stroke-width="2"/>
+<text x="95" y="46" text-anchor="middle" font-size="15" fill="currentColor">${en ? "Record" : "記録する"}</text>
+<text x="95" y="64" text-anchor="middle" font-size="11" fill="currentColor" opacity="0.65">${en ? "timer / manual entries" : "タイマー・手入力"}</text>
+<line x1="189" y1="48" x2="213" y2="48" stroke="#2456c8" stroke-width="2"/>
+<polygon points="225,48 211,41 211,55" fill="#2456c8"/>
+<rect x="226" y="24" width="188" height="48" fill="none" stroke="#2456c8" stroke-width="2"/>
+<text x="320" y="46" text-anchor="middle" font-size="15" fill="currentColor">${en ? "Encrypt & sync" : "暗号化して同期"}</text>
+<text x="320" y="64" text-anchor="middle" font-size="11" fill="currentColor" opacity="0.65">${en ? "local-first" : "ローカルファースト"}</text>
+<line x1="414" y1="48" x2="438" y2="48" stroke="#2456c8" stroke-width="2"/>
+<polygon points="450,48 436,41 436,55" fill="#2456c8"/>
+<rect x="451" y="24" width="188" height="48" fill="none" stroke="#2456c8" stroke-width="2"/>
+<text x="545" y="46" text-anchor="middle" font-size="15" fill="currentColor">${en ? "Review" : "集計する"}</text>
+<text x="545" y="64" text-anchor="middle" font-size="11" fill="currentColor" opacity="0.65">${en ? "Gantt / reports" : "ガント・レポート"}</text>
+</svg>
 <h2>${t(locale, "landing.features_title")}</h2>
 <ul>
 <li>${en ? "Tasks with subtasks, dependencies, labels, comments and custom statuses" : "タスク管理（サブタスク・依存・ラベル・コメント・ステータスカスタマイズ）"}</li>
@@ -586,13 +713,16 @@ ${cta}
 <p class="muted">${en
     ? "Machine-readable status is at /health and /api/health. The MCP endpoint is POST /mcp (API key authentication)."
     : "状態確認の JSON は /health と /api/health にあります。MCP エンドポイントは POST /mcp（API キー認証）です。"}</p>
-<p><a href="/terms">${t(locale, "nav.terms")}</a> ／ <a href="/privacy">${t(locale, "nav.privacy")}</a></p>`;
+<p><a href="/terms">${t(locale, "nav.terms")}</a> ／ <a href="/privacy">${t(locale, "nav.privacy")}</a> ／ <a href="/design-system">デザインシステム</a></p>`;
   return c.html(shell("Kosu — 工数・タスク管理", body, "", { prefs }));
 });
 
 /* ------------------------------------------------------------------ */
 /* Dashboard                                                            */
 /* ------------------------------------------------------------------ */
+
+/** Vault panel script, served as a cacheable external asset (phase 8). */
+export const VAULT_ASSET_URL = assetUrl("vault", "js", VAULT_PANEL_SCRIPT);
 
 const DASHBOARD_SCRIPT = `
 const ui = window.KosuUI;
@@ -684,6 +814,50 @@ ui.onReady(async () => {
     td.colSpan = 5; td.className = "muted"; td.textContent = "プロジェクトがまだありません";
     tr.appendChild(td); sumBody.appendChild(tr);
   }
+  // Week time by project as an SVG bar chart (diagram-first dashboard).
+  const chartData = projects
+    .map((p) => ({ name: p.name, seconds: weekByProject[p.id] || 0 }))
+    .filter((x) => x.seconds > 0)
+    .sort((a, b) => b.seconds - a.seconds);
+  const chartEl = $("projChart");
+  if (chartEl && chartData.length > 0) {
+    const maxSec = Math.max.apply(null, chartData.map((x) => x.seconds));
+    const rowH = 22, nameW = 150, barMax = 380, valW = 90;
+    const width = nameW + barMax + valW;
+    const height = chartData.length * rowH + 4;
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 " + width + " " + height);
+    svg.setAttribute("width", "100%");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", "プロジェクト別 今週の工数（棒グラフ）");
+    svg.classList.add("bars");
+    chartData.forEach((x, i) => {
+      const y = i * rowH + 2;
+      const bw = Math.max(2, Math.round(barMax * x.seconds / maxSec));
+      const name = document.createElementNS(NS, "text");
+      name.setAttribute("x", "0");
+      name.setAttribute("y", String(y + 14));
+      name.setAttribute("font-size", "12");
+      name.setAttribute("fill", "currentColor");
+      name.textContent = x.name;
+      const rect = document.createElementNS(NS, "rect");
+      rect.setAttribute("x", String(nameW));
+      rect.setAttribute("y", String(y + 3));
+      rect.setAttribute("width", String(bw));
+      rect.setAttribute("height", "14");
+      rect.setAttribute("fill", "#2456c8");
+      rect.classList.add("bar");
+      const val = document.createElementNS(NS, "text");
+      val.setAttribute("x", String(nameW + bw + 8));
+      val.setAttribute("y", String(y + 14));
+      val.setAttribute("font-size", "12");
+      val.setAttribute("fill", "currentColor");
+      val.textContent = ui.fmtHM(x.seconds);
+      svg.append(name, rect, val);
+    });
+    chartEl.appendChild(svg);
+  }
   dueList.sort((a, b) => a.task.due_date.localeCompare(b.task.due_date));
   $("dueCount").textContent = String(dueList.length);
   const dueBody = $("dueSoon");
@@ -724,11 +898,12 @@ uiRoutes.get("/app", async (c) => {
   <div class="card"><div class="muted">同期ステータス</div><div class="big" id="syncSeq">–</div><div class="muted" id="syncInfo"></div></div>
 </div>
 <h2>${t(locale, "dashboard.due_soon")}</h2>
-<table><thead><tr><th>タスク</th><th>プロジェクト</th><th>期限</th><th>ステータス</th></tr></thead><tbody id="dueSoon"></tbody></table>
+<table><thead><tr><th scope="col">タスク</th><th scope="col">プロジェクト</th><th scope="col">期限</th><th scope="col">ステータス</th></tr></thead><tbody id="dueSoon"></tbody></table>
 <h2>${t(locale, "dashboard.by_project")}</h2>
-<table><thead><tr><th>プロジェクト</th><th>タスク数</th><th>完了</th><th>進行中</th><th>今週の工数</th></tr></thead><tbody id="projSummary"></tbody></table>
+<div id="projChart"></div>
+<table><thead><tr><th scope="col">プロジェクト</th><th scope="col">タスク数</th><th scope="col">完了</th><th scope="col">進行中</th><th scope="col">今週の工数</th></tr></thead><tbody id="projSummary"></tbody></table>
 <h2>進行中のタスク</h2>
-<table><thead><tr><th>タスク</th><th>期限</th><th></th></tr></thead><tbody id="doing"></tbody></table>`;
+<table><thead><tr><th scope="col">タスク</th><th scope="col">期限</th><th scope="col"></th></tr></thead><tbody id="doing"></tbody></table>`;
   return c.html(
     appPage(prefs, "dashboard", t(locale, "dashboard.title"), `Kosu ${t(locale, "dashboard.title")}`, inner, DASHBOARD_SCRIPT),
   );
@@ -768,7 +943,7 @@ const TASKS_HTML = `
 <div class="split">
 <div>
 <p class="muted" id="taskCount"></p>
-<table><thead><tr><th>タスク</th><th>ステータス</th><th>優先度</th><th>担当</th><th>期限</th><th>ラベル</th></tr></thead><tbody id="taskRows"></tbody></table>
+<table><thead><tr><th scope="col">タスク</th><th scope="col">ステータス</th><th scope="col">優先度</th><th scope="col">担当</th><th scope="col">期限</th><th scope="col">ラベル</th></tr></thead><tbody id="taskRows"></tbody></table>
 </div>
 <div class="detail" id="detail" hidden>
 <h2 id="dTitle"></h2>
@@ -904,12 +1079,40 @@ function renderList() {
   const tbody = $("taskRows");
   tbody.innerHTML = "";
   const today = ui.todayStr();
-  for (const item of orderedTasks()) {
+  const items = orderedTasks();
+  if (items.length === 0) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 6;
+    td.className = "muted";
+    if (taskCache.length === 0) {
+      td.textContent = "タスクがまだありません。";
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = "最初のタスクを作成";
+      b.onclick = () => { $("createForm").scrollIntoView({ behavior: "smooth", block: "start" }); $("cTitle").focus(); };
+      td.appendChild(document.createTextNode(" "));
+      td.appendChild(b);
+    } else {
+      td.textContent = "条件に合うタスクがありません。";
+    }
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+  for (const item of items) {
     const t = item.task;
     const tr = document.createElement("tr");
     tr.className = "clickable";
     if (t.id === selectedId) tr.style.background = "#eef1f8";
     tr.onclick = () => selectTask(t.id);
+    tr.tabIndex = 0;
+    tr.onkeydown = (ev) => {
+      if (ev.target === tr && (ev.key === "Enter" || ev.key === " ")) {
+        ev.preventDefault();
+        selectTask(t.id);
+      }
+    };
     const td1 = document.createElement("td");
     td1.textContent = (item.depth ? "　".repeat(item.depth) + "↳ " : "") + t.title;
     if (t.archived_at) td1.className = "muted";
@@ -1103,7 +1306,7 @@ async function renderComments(t) {
     head.textContent = ui.memberName(cm.account_id) + " ・ " + new Date(cm.created_at).toLocaleString();
     const body = document.createElement("div");
     const text = await ui.decryptOrNull(cm.body_enc);
-    body.textContent = text === null ? "🔒 暗号化されています（ロック解除で表示）" : text;
+    body.textContent = text === null ? "暗号化されています（ロック解除で表示）" : text;
     body.style.whiteSpace = "pre-wrap";
     div.append(head, body);
     box.appendChild(div);
@@ -1161,6 +1364,7 @@ ui.onReady(async () => {
       $("cTitle").value = "";
       await loadTasks();
       await selectTask(r.task.id);
+      ui.toast("タスクを作成しました");
     } catch (e) { $("msg").textContent = e.message; }
   };
   $("editForm").onsubmit = async (ev) => {
@@ -1212,14 +1416,16 @@ ui.onReady(async () => {
   };
   $("dTimer").onclick = async () => {
     if (!selectedTask) return;
+    const stopping = $("dTimer").textContent === "タイマー停止";
     try {
-      if ($("dTimer").textContent === "タイマー停止") {
+      if (stopping) {
         await ui.api(ui.tenantPath() + "/timer/stop", ui.jsonOpts("POST"));
       } else {
         await ui.api(ui.tenantPath() + "/timer/start", ui.jsonOpts("POST", { task_id: selectedTask.id }));
       }
       await ui.refreshTimerChip();
       await loadDetailExtras(selectedTask);
+      ui.toast(stopping ? "タイマーを停止しました" : "タイマーを開始しました");
     } catch (e) { $("msg").textContent = e.message; }
   };
   $("subAdd").onclick = async () => {
@@ -1261,15 +1467,12 @@ uiRoutes.get("/app/tasks", async (c) => {
   const prefs = await requirePrefs(c);
   if (!prefs) return c.redirect("/auth/login", 302);
   const locale = prefs.locale;
-  const script =
-    VAULT_PANEL_SCRIPT +
-    "\n" +
-    TASKS_SCRIPT.replaceAll(
-      "VAULT_HTML",
-      JSON.stringify(VAULT_PANEL_HTML),
-    );
+  const script = TASKS_SCRIPT.replaceAll(
+    "VAULT_HTML",
+    JSON.stringify(VAULT_PANEL_HTML),
+  );
   return c.html(
-    appPage(prefs, "tasks", t(locale, "tasks.title"), t(locale, "tasks.title"), TASKS_HTML, script),
+    appPage(prefs, "tasks", t(locale, "tasks.title"), t(locale, "tasks.title"), TASKS_HTML, script, { vault: true }),
   );
 });
 
@@ -1413,7 +1616,7 @@ async function loadWeek() {
       td3.textContent = ui.fmtHMS(e.duration_seconds);
       if (e.long_running) {
         const s = document.createElement("span");
-        s.className = "warn"; s.textContent = " ⚠長時間";
+        s.className = "warn"; s.textContent = " 長時間";
         td3.appendChild(s);
       }
       const td4 = document.createElement("td");
@@ -1513,6 +1716,7 @@ ui.onReady(async () => {
     const started = new Date($("mDate").value + "T" + $("mStart").value + ":00");
     const ended = new Date($("mDate").value + "T" + $("mEnd").value + ":00");
     if (!(ended > started)) { $("msg").textContent = "終了は開始より後にしてください"; return; }
+    const wasEdit = editingId;
     try {
       if (editingId) {
         await ui.api(ui.tenantPath() + "/time-entries/" + editingId, ui.jsonOpts("PATCH", {
@@ -1531,6 +1735,7 @@ ui.onReady(async () => {
       resetManual();
       await loadTaskIndex();
       await loadWeek();
+      ui.toast(wasEdit ? "工数を修正しました" : "工数を追加しました");
     } catch (e) { $("msg").textContent = e.message; }
   };
   $("prevWeek").onclick = async () => { weekStart = ui.addDays(weekStart, -7); await loadWeek(); };
@@ -1558,7 +1763,7 @@ const GANTT_HTML = `
 <p class="muted">プロジェクトは画面上部の切替で変更できます。期間はタスクとマイルストーンの日付から自動で決まります。<a id="standaloneLink" href="#">単体ページで開く</a></p>
 <div id="chart" style="overflow-x:auto"></div>
 <h2>マイルストーン</h2>
-<table><thead><tr><th>名前</th><th>日付</th></tr></thead><tbody id="milestoneRows"></tbody></table>`;
+<table><thead><tr><th scope="col">名前</th><th scope="col">日付</th></tr></thead><tbody id="milestoneRows"></tbody></table>`;
 
 const GANTT_SCRIPT = `
 const ui = window.KosuUI;
@@ -1607,7 +1812,7 @@ ui.onReady(async () => {
     el("text", { x: 4, y: y + 16, "font-size": 12 }, t.title.length > 24 ? t.title.slice(0, 24) + "…" : t.title);
     const s = t.start_date ? parseDay(t.start_date) : parseDay(t.due_date);
     const e = t.due_date ? parseDay(t.due_date) + DAY : s + DAY;
-    const color = t.status === "done" ? "#8a8" : t.status === "doing" ? "#2456c8" : "#99a";
+    const color = t.status === "done" ? "#3d9970" : t.status === "doing" ? "#2456c8" : "#7a7a8c";
     el("rect", { x: x(s), y: y + 5, width: Math.max(W, x(e) - x(s)), height: 14, rx: 3, fill: color });
     if (t.estimate_minutes) el("text", { x: x(e) + 4, y: y + 16, "font-size": 10, fill: "#667" }, "見積 " + t.estimate_minutes + "分");
   });
@@ -1626,7 +1831,7 @@ ui.onReady(async () => {
   });
   data.milestones.forEach((m) => {
     const mx = x(parseDay(m.date));
-    el("path", { d: "M" + mx + " 20 l6 6 l-6 6 l-6 -6 z", fill: "#e8a33d" });
+    el("path", { d: "M" + mx + " 20 l6 6 l-6 6 l-6 -6 z", fill: "#b97a1e" });
     el("text", { x: mx + 9, y: 30, "font-size": 11, fill: "#8a6414" }, m.name);
   });
   $("chart").appendChild(svg);
@@ -1693,9 +1898,9 @@ const REPORTS_HTML = `
   <a id="rPrint" href="#" target="_blank" rel="noopener">印刷・PDF 向け表示</a>
 </div>
 </form>
-<table><thead><tr><th>項目</th><th>件数</th><th>実績</th><th>丸め後</th><th>コスト</th></tr></thead>
+<table><thead><tr><th scope="col">項目</th><th scope="col">件数</th><th scope="col">実績</th><th scope="col">丸め後</th><th scope="col">コスト</th></tr></thead>
 <tbody id="reportRows"></tbody>
-<tfoot><tr><th>合計</th><th id="totEntries"></th><th id="totSeconds"></th><th id="totRounded"></th><th id="totCost"></th></tr></tfoot></table>
+<tfoot><tr><th scope="col">合計</th><th id="totEntries"></th><th id="totSeconds"></th><th id="totRounded"></th><th id="totCost"></th></tr></tfoot></table>
 <p class="muted">コストは単価設定があるメンバーの分だけ集計されます。期間は開始日基準です。</p>`;
 
 const REPORTS_SCRIPT = `
@@ -1829,7 +2034,7 @@ const SETTINGS_HTML = `
 <div id="vaultSlot"></div>
 <h2>API キー</h2>
 <p class="muted">MCP やスクリプトからの接続に使います。平文のキーは発行時に1回だけ表示します。</p>
-<table><thead><tr><th>名前</th><th>接頭辞</th><th>スコープ</th><th>作成</th><th>最終利用</th><th>状態</th><th></th></tr></thead><tbody id="keyRows"></tbody></table>
+<table><thead><tr><th scope="col">名前</th><th scope="col">接頭辞</th><th scope="col">スコープ</th><th scope="col">作成</th><th scope="col">最終利用</th><th scope="col">状態</th><th scope="col"></th></tr></thead><tbody id="keyRows"></tbody></table>
 <form id="keyForm">
 <div class="toolbar">
   <label>名前 <input type="text" id="kName" required size="24"></label>
@@ -1958,11 +2163,9 @@ uiRoutes.get("/app/settings", async (c) => {
   const prefs = await requirePrefs(c);
   if (!prefs) return c.redirect("/auth/login", 302);
   const locale = prefs.locale;
-  const script =
-    VAULT_PANEL_SCRIPT +
-    "\n" +
-    SETTINGS_SCRIPT.replaceAll("VAULT_HTML", JSON.stringify(VAULT_PANEL_HTML));
+  const script = SETTINGS_SCRIPT.replaceAll("VAULT_HTML", JSON.stringify(VAULT_PANEL_HTML));
   return c.html(
-    appPage(prefs, "settings", t(locale, "settings.title"), t(locale, "settings.title"), SETTINGS_HTML, script),
+    appPage(prefs, "settings", t(locale, "settings.title"), t(locale, "settings.title"), SETTINGS_HTML, script, { vault: true }),
   );
 });
+

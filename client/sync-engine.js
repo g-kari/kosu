@@ -30,6 +30,7 @@ export class SyncEngine {
   async request(path, opts = {}) {
     const response = await this.fetchFn(`${this.baseUrl}${path}`, {
       headers: { "content-type": "application/json" },
+      cache: "no-store",
       ...opts,
     });
     const data = await response.json().catch(() => ({}));
@@ -42,6 +43,20 @@ export class SyncEngine {
       throw error;
     }
     return data;
+  }
+
+  async verifyAccount() {
+    const me = await this.request("/me");
+    const accountId = me?.account?.id;
+    if (typeof accountId !== "string") throw new Error("Current account could not be verified");
+    const owner = await this.db.getMeta("sync_account_id");
+    if (owner && owner !== accountId) throw new Error("Local sync storage belongs to another account; use an account-specific database");
+    if (!owner) {
+      const hasRows = (await Promise.all(["task","time_entry","task_dependency","milestone"].map(type=>this.db.listEntities(type)))).some(rows=>rows.length);
+      if (hasRows || (await this.db.listOutbox()).length || (await this.db.listConflicts()).length || (await this.db.getMeta("sync_quarantine"))?.length) throw new Error("Existing local data has no verified owner; manual recovery required");
+    }
+    await this.db.setMeta("sync_account_id",accountId);
+    return accountId;
   }
 
   /* ------------------------------ devices ------------------------- */
@@ -90,6 +105,7 @@ export class SyncEngine {
    *           base_version, payload }
    */
   async queueChange(change) {
+    const owner = await this.db.getMeta("sync_account_id") ?? await this.verifyAccount();
     if (change.op === "upsert" && change.payload) {
       await this.db.putEntity(change.entity_type, {
         ...change.payload,
@@ -108,23 +124,27 @@ export class SyncEngine {
         });
       }
     }
-    return this.db.enqueue(change);
+    return this.db.enqueue({...change, account_id:owner});
   }
 
   /* ------------------------------ push ---------------------------- */
 
   async push(tenantId) {
+    await this.pull(tenantId);
     const deviceId = await this.ensureDevice();
     const queued = await this.db.listOutbox();
     if (queued.length === 0) {
       return { applied: 0, conflicts: 0, results: [] };
     }
-    const changes = queued.map(({ id, ...change }) => change);
+    const accountId = await this.verifyAccount();
+    if (queued.some(row=>row.account_id !== accountId)) throw new Error("Unowned local edits require manual recovery");
+    const changes = queued.map(({ id, account_id, ...change }) => change);
+    const scope_token = await this.db.getMeta(`scope:${tenantId}`);
     const data = await this.request(
       `/api/v1/tenants/${tenantId}/sync/push`,
       {
         method: "POST",
-        body: JSON.stringify({ device_id: deviceId, changes }),
+        body: JSON.stringify({ device_id: deviceId, changes, protocol: 2, scope_token }),
       },
     );
     let applied = 0;
@@ -170,14 +190,55 @@ export class SyncEngine {
 
   /* ------------------------------ pull ---------------------------- */
 
+  async invalidateMirror(tenantId, accountId) {
+    // Preserve unsent work but never automatically replay it after an access
+    // change. A host may offer explicit owner-reviewed recovery from quarantine.
+    const pending = await this.db.listOutbox();
+    if (pending.length) {
+      const quarantine = await this.db.getMeta("sync_quarantine") ?? [];
+      await this.db.setMeta("sync_quarantine", [...quarantine, {account_id:accountId, tenant_id:tenantId, changes:pending}]);
+      await this.db.removeOutbox(pending.map(row=>row.id));
+    }
+    for (const type of ["task","time_entry","task_dependency","milestone"]) {
+      for (const row of await this.db.listEntities(type)) {
+        if (row.tenant_id === tenantId) await this.db.deleteEntity(type,row.id);
+      }
+    }
+    await this.db.clearConflicts();
+  }
+
+  async quarantinedChanges() {
+    const accountId = await this.verifyAccount();
+    return (await this.db.getMeta("sync_quarantine") ?? []).filter(item=>item.account_id===accountId);
+  }
+
   async pull(tenantId, { limit = 500 } = {}) {
+    const accountId = await this.verifyAccount();
     const deviceId = await this.ensureDevice();
     let since = Number((await this.db.getMeta(`last_seq:${tenantId}`)) ?? 0);
     let applied = 0;
+    let resets = 0;
     for (;;) {
+      const scope = await this.db.getMeta(`scope:${tenantId}`) ?? "";
       const data = await this.request(
-        `/api/v1/tenants/${tenantId}/sync/pull?device_id=${encodeURIComponent(deviceId)}&since_seq=${since}&limit=${limit}`,
-      );
+        `/api/v1/tenants/${tenantId}/sync/pull?device_id=${encodeURIComponent(deviceId)}&since_seq=${since}&limit=${limit}&protocol=2&scope_token=${encodeURIComponent(scope)}`,
+      ).catch(async(error)=>{
+        if(error.status===403 || error.status===404) await this.invalidateMirror(tenantId,accountId);
+        throw error;
+      });
+      if (accountId !== await this.verifyAccount()) throw new Error("Account changed during synchronization");
+      if (typeof data.scope_token !== "string") throw new Error("Sync server upgrade required");
+      if (data.reset) {
+        if (++resets > 3) throw new Error("Access is changing; synchronization paused");
+        // The initial handshake of a verified, freshly initialized store
+        // is not a permission change and must retain newly queued edits.
+        if (scope) await this.invalidateMirror(tenantId,accountId);
+        since = 0;
+        await this.db.setMeta(`last_seq:${tenantId}`,0);
+        await this.db.setMeta(`scope:${tenantId}`,data.scope_token);
+        continue;
+      }
+      if (data.scope_token !== scope) throw new Error("Unexpected access token; synchronization paused");
       for (const change of data.changes) {
         if (change.payload) {
           await this.db.putEntity(change.entity_type, change.payload);
@@ -223,3 +284,4 @@ export class SyncEngine {
     return { pushed, pulled, status };
   }
 }
+

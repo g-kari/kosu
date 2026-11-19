@@ -47,6 +47,7 @@ import {
   loadMilestoneAny,
   loadTask,
   loadTaskAny,
+  parseClientTimestamp,
   parseEntryInput,
   parseMilestoneInput,
   parseTaskInput,
@@ -625,6 +626,7 @@ taskRoutes.post(`${TENANT_PATH}/timer/start`, async (c) => {
     tenantId,
     workspaceId,
     taskId,
+    startedAt: parseClientTimestamp(body["client_started_at"], "client_started_at"),
   });
   return c.json({ entry: publicEntry(row) }, 201);
 });
@@ -632,9 +634,15 @@ taskRoutes.post(`${TENANT_PATH}/timer/start`, async (c) => {
 taskRoutes.post(`${TENANT_PATH}/timer/stop`, async (c) => {
   const tenantId = c.req.param("tenantId") as string;
   const principal = await auth(c, tenantId);
+  const body = await readJsonBody(c).catch(() => ({}) as Record<string, unknown>);
   await loadTenant(c.env, tenantId);
   await guard(c.env, principal, { tenantId }, "read");
-  const row = await stopTimer(c.env, principal, tenantId);
+  const row = await stopTimer(
+    c.env,
+    principal,
+    tenantId,
+    parseClientTimestamp(body["client_stopped_at"], "client_stopped_at"),
+  );
   return c.json({ entry: publicEntry(row) });
 });
 

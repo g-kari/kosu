@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { FakeDb } from "./fake-db";
-import { buildHierarchy, call, setupOwner } from "./phase2-helpers";
+import { buildHierarchy, call as rawCall, setupOwner } from "./phase2-helpers";
+
+async function call(db: FakeDb, path: string, options: Parameters<typeof rawCall>[2] = {}) {
+  if (path.includes("/sync/pull") && path.includes("device_id=")) {
+    const first = await rawCall(db,path+"&protocol=2",options);
+    if (first.status !== 200) return first;
+    const data=await first.json() as {scope_token:string};
+    return rawCall(db,path+"&protocol=2&scope_token="+data.scope_token,options);
+  }
+  return rawCall(db,path,options);
+}
 
 async function registerDevice(db: FakeDb, cookie: string): Promise<string> {
   const res = await call(db, "/api/v1/sync/devices", {
@@ -19,10 +29,12 @@ async function push(
   deviceId: string,
   changes: unknown[],
 ) {
+  const handshake=await rawCall(db,`/api/v1/tenants/${tenantId}/sync/pull?device_id=${deviceId}&protocol=2`,{cookie});
+  const scope=await handshake.json() as {scope_token?:string};
   return call(db, `/api/v1/tenants/${tenantId}/sync/push`, {
     method: "POST",
     cookie,
-    body: { device_id: deviceId, changes },
+    body: { device_id: deviceId, changes, protocol:2, scope_token:scope.scope_token },
   });
 }
 
@@ -275,3 +287,4 @@ describe("sync push/pull", () => {
     expect(pull.status).toBe(400);
   });
 });
+

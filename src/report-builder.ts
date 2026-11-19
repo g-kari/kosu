@@ -10,6 +10,7 @@
  * (in-app + tenant webhooks via the notification dispatcher).
  */
 
+import { guard, loadTenant } from "./hierarchy";
 import { randomId } from "./tokens";
 import { badRequest } from "./errors";
 import { nowIso } from "./accounts";
@@ -167,6 +168,14 @@ export function publicDefinition(
   };
 }
 
+export const MAX_REPORT_DEFINITIONS = 100;
+export const MAX_REPORT_RUNS = 1000;
+async function requireReportCapacity(env:Env,tenantId:string,kind:"definitions"|"runs") {
+  const table = kind === "definitions" ? "report_definitions" : "report_runs";
+  const {results} = await env.DB.prepare(`SELECT id FROM ${table} WHERE tenant_id = ?1`).bind(tenantId).all();
+  if ((results?.length ?? 0) >= (kind === "definitions" ? MAX_REPORT_DEFINITIONS : MAX_REPORT_RUNS)) throw badRequest("Stored report capacity reached");
+}
+
 export async function insertDefinition(
   env: Env,
   args: {
@@ -177,6 +186,9 @@ export async function insertDefinition(
     createdBy: string;
   },
 ): Promise<ReportDefinitionRow> {
+  await loadTenant(env,args.tenantId);
+  await guard(env,{kind:"session",accountId:args.createdBy},{tenantId:args.tenantId},"admin");
+  await requireReportCapacity(env,args.tenantId,"definitions");
   const now = nowIso();
   const row: ReportDefinitionRow = {
     id: randomId(),
@@ -234,6 +246,9 @@ export async function runDefinition(
   row: ReportDefinitionRow,
   now: string = nowIso(),
 ): Promise<{ runId: string; report: unknown }> {
+  await loadTenant(env,row.tenant_id);
+  await guard(env,{kind:"session",accountId:row.created_by_account_id},{tenantId:row.tenant_id},"admin");
+  await requireReportCapacity(env,row.tenant_id,"runs");
   const definition = parseDefinition(row.definition_json);
   const today = now.slice(0, 10);
   const { from, to } = resolveRange(definition.range, today);
@@ -263,9 +278,11 @@ export async function runDueReports(
     "SELECT * FROM report_definitions WHERE deleted_at IS NULL",
   ).all<ReportDefinitionRow>();
   let ran = 0;
+  let attempted = 0;
   for (const row of results ?? []) {
     if (row.schedule === "off" || !row.next_run_at) continue;
     if (row.next_run_at > now) continue;
+    if (attempted++ >= 25) break;
     try {
       await runDefinition(env, row, now);
       ran++;
@@ -290,3 +307,4 @@ export async function runDueReports(
   }
   return { ran };
 }
+

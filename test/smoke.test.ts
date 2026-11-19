@@ -34,7 +34,7 @@ describe("app", () => {
     };
     expect(body.name).toBe("Kosu");
     expect(body.status).toBe("ok");
-    expect(body.version).toBe("0.7.0");
+    expect(body.version).toBe("0.12.0");
   });
 
   it("GET /health returns ok with the service identity", async () => {
@@ -42,7 +42,7 @@ describe("app", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { status: string; version: string };
     expect(body.status).toBe("ok");
-    expect(body.version).toBe("0.7.0");
+    expect(body.version).toBe("0.12.0");
   });
 
   it("GET /api/health returns the service identity", async () => {

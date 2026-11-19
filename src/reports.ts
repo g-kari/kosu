@@ -473,8 +473,10 @@ export async function buildTimeReport(
 /** CSV rendering of a report (one row per group plus a total row). */
 export function reportToCsv(report: TimeReport): string {
   const esc = (v: string | number): string => {
-    const s = String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    // Keep actual numbers numeric, but never let untrusted labels become formulas.
+    let s = String(v);
+    if (typeof v === "string" && /^[\s\u0000-\u001f]*[=+@-]/.test(s)) s = "'" + s;
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const lines: string[] = [];
   const groupName =
@@ -534,3 +536,4 @@ export function reportToCsv(report: TimeReport): string {
   );
   return lines.join("\n") + "\n";
 }
+

@@ -16,6 +16,11 @@
  * Failures are plain 401/404 without detail about which part
  * mismatched, and no secret or sub value is ever rendered here.
  */
+import { atomicWrites } from "../atomic-writes";
+import { nowIso } from "../accounts";
+import { sha256Hex, randomId } from "../tokens";
+import { assertWithinLimits } from "../usage";
+import { loadTenant,loadWorkspace,loadTeam } from "../hierarchy";
 import { Hono } from "hono";
 import {
   connectionWebhookSecret,
@@ -30,6 +35,7 @@ import {
   touchIcalFeed,
   verifyWebhookSignature,
 } from "../integrations";
+import { accessForProject, type RoleChain } from "../permissions";
 import { insertTask } from "../tasks";
 import type {
   Env,
@@ -169,37 +175,45 @@ publicInRoutes.get("/feeds/ical/:file", async (c) => {
   )
     .bind(feed.tenant_id)
     .all<ProjectRow>();
-  const memberOf = async (sql: string, ...binds: unknown[]) => {
-    const row = await c.env.DB.prepare(sql)
-      .bind(...binds)
-      .first<Record<string, unknown>>();
-    return row !== null;
+  // A retained feed token must not outlive its resource hierarchy.
+  const tenant = await c.env.DB.prepare("SELECT id FROM tenants WHERE id = ?1 AND deleted_at IS NULL")
+    .bind(feed.tenant_id).first();
+  if (!tenant) return c.notFound();
+  const roles = new Map<string, string | null>();
+  const role = async (table: string, column: string, id: string): Promise<string | null> => {
+    const key = `${table}:${id}`;
+    if (!roles.has(key)) {
+      const row = await c.env.DB.prepare(`SELECT role FROM ${table} WHERE ${column} = ?1 AND account_id = ?2`)
+        .bind(id, feed.account_id).first<{role:string}>();
+      roles.set(key, row?.role ?? null);
+    }
+    return roles.get(key) ?? null;
   };
-  const isTenantMember = await memberOf(
-    "SELECT account_id FROM tenant_members WHERE tenant_id = ?1 AND account_id = ?2",
-    feed.tenant_id,
-    feed.account_id,
-  );
+  const tenantRole = await role("tenant_members", "tenant_id", feed.tenant_id) as RoleChain["tenant"];
+  const activeWorkspaces = new Map<string, boolean>();
+  const activeTeams = new Map<string, boolean>();
   const readableProjectIds = new Set<string>();
   for (const project of projectsRes.results) {
-    const readable =
-      isTenantMember ||
-      (await memberOf(
-        "SELECT account_id FROM workspace_members WHERE workspace_id = ?1 AND account_id = ?2",
-        project.workspace_id,
-        feed.account_id,
-      )) ||
-      (await memberOf(
-        "SELECT account_id FROM team_members WHERE team_id = ?1 AND account_id = ?2",
-        project.team_id,
-        feed.account_id,
-      )) ||
-      (await memberOf(
-        "SELECT account_id FROM project_members WHERE project_id = ?1 AND account_id = ?2",
-        project.id,
-        feed.account_id,
-      ));
-    if (readable) readableProjectIds.add(project.id);
+    if (!activeWorkspaces.has(project.workspace_id)) {
+      const row = await c.env.DB.prepare("SELECT id FROM workspaces WHERE id = ?1 AND tenant_id = ?2 AND deleted_at IS NULL")
+        .bind(project.workspace_id, feed.tenant_id).first();
+      activeWorkspaces.set(project.workspace_id, row !== null);
+    }
+    if (!activeWorkspaces.get(project.workspace_id)) continue;
+    const teamKey = `${project.workspace_id}:${project.team_id}`;
+    if (!activeTeams.has(teamKey)) {
+      const row = await c.env.DB.prepare("SELECT id FROM teams WHERE id = ?1 AND workspace_id = ?2 AND deleted_at IS NULL")
+        .bind(project.team_id, project.workspace_id).first();
+      activeTeams.set(teamKey, row !== null);
+    }
+    if (!activeTeams.get(teamKey)) continue;
+    const chain: RoleChain = {
+      tenant: tenantRole,
+      workspace: await role("workspace_members", "workspace_id", project.workspace_id) as RoleChain["workspace"],
+      team: await role("team_members", "team_id", project.team_id) as RoleChain["team"],
+      project: await role("project_members", "project_id", project.id) as RoleChain["project"],
+    };
+    if (accessForProject(chain).read) readableProjectIds.add(project.id);
   }
   const allTasks = await c.env.DB.prepare(
     "SELECT * FROM tasks WHERE tenant_id = ?1 AND deleted_at IS NULL",
@@ -265,11 +279,14 @@ publicInRoutes.post("/inbound/mail/:token", async (c) => {
   const raw = await c.req.text();
   if (raw.length > BODY_LIMIT) return c.json({ error: "too_large" }, 413);
   let subject: string | null = null;
+  let messageId: string | null = null;
   const contentType = c.req.header("content-type") ?? "";
   if (contentType.includes("application/json")) {
     const body = jsonRecord(raw);
     const value = body?.["subject"] ?? body?.["title"];
     subject = typeof value === "string" && value ? value : null;
+    const suppliedId = body?.["message_id"];
+    if (typeof suppliedId === "string" && suppliedId.length > 0 && suppliedId.length <= 1024) messageId = suppliedId;
   }
   if (!subject) {
     // Plain-text fallback: the first non-empty line is the title.
@@ -283,9 +300,22 @@ publicInRoutes.post("/inbound/mail/:token", async (c) => {
   if (!title) return c.json({ error: "subject_required" }, 400);
   const project = await loadProjectRowLoose(c.env, row.project_id);
   if (!project) return c.json({ error: "project_not_found" }, 422);
+  await loadTenant(c.env,project.tenant_id);
+  await loadWorkspace(c.env,project.tenant_id,project.workspace_id);
+  await loadTeam(c.env,project.workspace_id,project.team_id);
+  // Stable upstream message IDs are deduplicated atomically. Without an ID,
+  // each delivery is distinct; identical text is not proof of a replay.
+  // Include the token row identity, never the secret token, in the hash domain.
+  const taskId = "mail_" + await sha256Hex(row.id + "\0" + (messageId ?? randomId()));
+  const existing = await c.env.DB.prepare("SELECT task_id FROM mail_receipts WHERE id = ?1").bind(taskId).first<{task_id:string}>();
+  if (existing) return c.json({ok:true,task_id:existing.task_id,duplicate:true});
+  await assertWithinLimits(c.env,project.tenant_id,"task");
   const openStatus = await statusSlugForCategory(c.env, project, "open");
-  const task = await insertTask(
-    c.env,
+  let task: TaskRow;
+  try { task = await atomicWrites(c.env,async(transaction)=>{
+    await transaction.DB.prepare("INSERT INTO mail_receipts (id,tenant_id,task_id,created_at) VALUES (?1,?2,?3,?4)").bind(taskId,project.tenant_id,taskId,nowIso()).run();
+    const created = await insertTask(
+    transaction,
     project,
     {
       title,
@@ -300,15 +330,20 @@ publicInRoutes.post("/inbound/mail/:token", async (c) => {
       estimateMinutes: null,
     },
     { accountId: row.created_by_account_id, admin: true },
+    taskId,
   );
-  await recordSyncRun(c.env, {
-    tenantId: row.tenant_id,
-    connectionId: null,
-    provider: "mail",
-    kind: "webhook",
-    status: "ok",
-    stats: { created_tasks: 1, task_id: task.id, project_id: project.id },
-    createdByAccountId: row.created_by_account_id,
-  });
+    await recordSyncRun(transaction,{tenantId:row.tenant_id,connectionId:null,provider:"mail",kind:"webhook",status:"ok",stats:{created_tasks:1,task_id:created.id,project_id:project.id},createdByAccountId:row.created_by_account_id});
+    return created;
+  }); } catch(error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message.includes("UNIQUE constraint failed: mail_receipts.id")) {
+      const found=await c.env.DB.prepare("SELECT task_id FROM mail_receipts WHERE id = ?1").bind(taskId).first<{task_id:string}>();
+      if(found) return c.json({ok:true,task_id:found.task_id,duplicate:true});
+    }
+    if (message.includes("Mail inbound rate limit")) return c.json({error:"rate_limited"},429);
+    if (message.includes("Tenant task capacity")) return c.json({error:"limit_exceeded"},422);
+    throw error;
+  }
   return c.json({ ok: true, task_id: task.id }, 201);
 });
+

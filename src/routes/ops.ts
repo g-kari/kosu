@@ -1,3 +1,4 @@
+import { canReadSyncEntity, guardSyncEntity } from "../sync-access";
 /**
  * Phase-3 ops API: aggregated reports (+ CSV export and a printable
  * HTML view), member rates, project budgets, leave records,
@@ -228,6 +229,7 @@ opsRoutes.get(`${TENANT_PATH}/report/print`, async (c) => {
     .join("\n");
   const html = `<!doctype html>
 <html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kosu 工数レポート ${escapeHtml(params.from)} 〜 ${escapeHtml(params.to)}</title>
 <style>
 body { font-family: sans-serif; margin: 24px; color: #111; }
@@ -239,10 +241,10 @@ th:first-child, td:first-child { text-align: left; }
 <h1>${escapeHtml(tenant.name)} — 工数レポート</h1>
 <p>期間: ${escapeHtml(params.from)} 〜 ${escapeHtml(params.to)} / 集計単位: ${escapeHtml(params.groupBy)} / 通貨: ${escapeHtml(report.currency)}</p>
 <table>
-<thead><tr><th>項目</th><th>件数</th><th>実績 (h)</th><th>丸め後 (h)</th><th>コスト (セント)</th><th>期待値 (h)</th><th>予算 (セント)</th><th>予算超過</th></tr></thead>
+<thead><tr><th scope="col">項目</th><th scope="col">件数</th><th scope="col">実績 (h)</th><th scope="col">丸め後 (h)</th><th scope="col">コスト (セント)</th><th scope="col">期待値 (h)</th><th scope="col">予算 (セント)</th><th scope="col">予算超過</th></tr></thead>
 <tbody>
 ${rows}
-<tr><th>合計</th><th>${report.totals.entries}</th><th>${formatHours(report.totals.seconds)}</th><th>${formatHours(report.totals.rounded_seconds)}</th><th>${report.totals.cost_cents}</th><th></th><th></th><th></th></tr>
+<tr><th scope="row">合計</th><th scope="col">${report.totals.entries}</th><th scope="col">${formatHours(report.totals.seconds)}</th><th scope="col">${formatHours(report.totals.rounded_seconds)}</th><th scope="col">${report.totals.cost_cents}</th><th scope="col"></th><th scope="col"></th><th scope="col"></th></tr>
 </tbody></table>
 <p>このページは印刷・PDF 保存向けの表示です。</p>
 </body></html>`;
@@ -835,7 +837,11 @@ opsRoutes.get(`${TENANT_PATH}/sync-conflicts`, async (c) => {
         (status === "all" || r.status === status),
     )
     .sort((a, b) => b.created_at.localeCompare(a.created_at));
-  return c.json({ conflicts: rows.map((r) => publicConflict(r)) });
+  const visible = [];
+  for (const row of rows) {
+    if (await canReadSyncEntity(c.env, principal, tenantId, row.entity_type, row.entity_id)) visible.push(row);
+  }
+  return c.json({ conflicts: visible.map((r) => publicConflict(r)) });
 });
 
 async function loadConflictForActor(
@@ -849,6 +855,7 @@ async function loadConflictForActor(
   if (!admin && row.account_id !== principal.accountId) {
     throw notFound("Sync conflict not found");
   }
+  await guardSyncEntity(c.env, principal, tenantId, row.entity_type, row.entity_id, "read");
   return row;
 }
 
@@ -895,3 +902,4 @@ opsRoutes.post(`${TENANT_PATH}/sync-conflicts/:conflictId/resolve`, async (c) =>
   });
   return c.json({ conflict: publicConflict(resolved, true) });
 });
+

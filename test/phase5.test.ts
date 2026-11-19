@@ -577,8 +577,13 @@ describe("pagination, pwa and pages", () => {
     expect(html).toContain('rel="manifest"');
     expect(html).toContain('id="palette"');
     expect(html).toContain('class="skip"');
-    expect(html).toContain(":focus-visible");
     expect(html).toContain("serviceWorker");
+    // Phase 8: the shared stylesheet is an external cacheable asset.
+    const cssHref = /<link rel="stylesheet" href="([^"]+)">/.exec(html);
+    expect(cssHref).toBeTruthy();
+    const css = await call(db, (cssHref as RegExpExecArray)[1]!);
+    expect(css.status).toBe(200);
+    expect(await css.text()).toContain(":focus-visible");
   });
 
   it("serves the legal pages as placeholders", async () => {

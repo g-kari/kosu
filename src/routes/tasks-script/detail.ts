@@ -138,6 +138,61 @@ async function loadDetailExtras(t) {
   $("dTimer").textContent = running ? "タイマー停止" : "タイマー開始";
   // Comments
   await renderComments(t);
+  // Attachments
+  await renderAttachments(t);
+}
+function fmtBytes(n) {
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  return (n / (1024 * 1024)).toFixed(1) + " MB";
+}
+async function renderAttachments(t) {
+  const data = await ui.api(ui.projectPath() + "/tasks/" + t.id + "/attachments").catch(() => ({ attachments: [] }));
+  const ul = $("dAttachments");
+  ul.innerHTML = "";
+  if (data.attachments.length === 0) {
+    const li = document.createElement("li");
+    li.className = "muted"; li.textContent = "添付ファイルはありません";
+    ul.appendChild(li);
+  }
+  for (const a of data.attachments) {
+    const li = document.createElement("li");
+    const name = document.createElement("span");
+    name.textContent = a.filename + "（" + fmtBytes(a.size_bytes) + " ・ " + ui.memberName(a.account_id) + " ・ " + new Date(a.created_at).toLocaleString() + "）";
+    li.appendChild(name);
+    const dl = document.createElement("button");
+    dl.type = "button"; dl.className = "secondary"; dl.textContent = "ダウンロード";
+    dl.style.marginLeft = ".5rem";
+    dl.onclick = async () => {
+      try {
+        const r = await fetch(ui.tenantPath() + "/attachments/" + a.id);
+        if (!r.ok) {
+          const j = await r.json().catch(() => null);
+          throw new Error((j && j.error && j.error.message) || ("HTTP " + r.status));
+        }
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url; link.download = a.filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+      } catch (e) { $("msg").textContent = e.message; }
+    };
+    li.appendChild(dl);
+    const del = document.createElement("button");
+    del.type = "button"; del.className = "secondary"; del.textContent = "削除";
+    del.style.marginLeft = ".5rem";
+    del.onclick = async () => {
+      try {
+        await ui.api(ui.tenantPath() + "/attachments/" + a.id, { method: "DELETE" });
+        await renderAttachments(selectedTask);
+      } catch (e) { $("msg").textContent = e.message; }
+    };
+    li.appendChild(del);
+    ul.appendChild(li);
+  }
 }
 async function renderComments(t) {
   const data = await ui.api(ui.projectPath() + "/tasks/" + t.id + "/comments").catch(() => ({ comments: [] }));

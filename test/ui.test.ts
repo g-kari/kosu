@@ -68,6 +68,25 @@ describe("phase 6 Web UI", () => {
     }
   });
 
+  it("renders the task detail panel with the attachments UI (KAZAMI-346)", async () => {
+    const db = new FakeDb();
+    const owner = await setupOwner(db);
+    const page = await call(db, "/app/tasks", { cookie: owner.cookie });
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    // Section markup in the task detail panel
+    expect(html).toContain("添付ファイル");
+    expect(html).toContain('id="dAttachments"');
+    expect(html).toContain('id="attFile"');
+    expect(html).toContain('id="attUpload"');
+    // The page script lists, uploads, downloads and deletes through the
+    // permission-checked API only (no public or signed URLs).
+    expect(html).toContain("/attachments");
+    expect(html).toContain("x-file-name");
+    expect(html).not.toContain("r2.dev");
+    expect(html).not.toContain("X-Amz-Signature");
+  });
+
   it("renders the dashboard with due-soon and project summary sections", async () => {
     const db = new FakeDb();
     const owner = await setupOwner(db);

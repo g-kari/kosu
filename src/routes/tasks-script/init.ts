@@ -147,6 +147,21 @@ export const TASKS_SCRIPT_INIT = `ui.onReady(async () => {
       await renderComments(selectedTask);
     } catch (e) { $("msg").textContent = e.message; }
   };
+  $("attUpload").onclick = async () => {
+    if (!selectedTask) return;
+    const file = $("attFile").files[0];
+    if (!file) { $("msg").textContent = "アップロードするファイルを選んでください"; return; }
+    try {
+      await ui.api(ui.projectPath() + "/tasks/" + selectedTask.id + "/attachments", {
+        method: "POST",
+        headers: { "x-file-name": encodeURIComponent(file.name), "content-type": file.type || "application/octet-stream" },
+        body: file,
+      });
+      $("attFile").value = "";
+      await renderAttachments(selectedTask);
+      ui.toast("添付ファイルをアップロードしました");
+    } catch (e) { $("msg").textContent = e.message; }
+  };
   $("vaultSlot").innerHTML = VAULT_HTML;
   await initVaultPanel(ui);
   await loadTasks();

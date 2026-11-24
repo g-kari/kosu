@@ -986,6 +986,10 @@ const TASKS_HTML = `
 <div id="dComments"></div>
 <p><textarea id="commentBody" rows="3" placeholder="コメント（暗号化して保存されます）"></textarea></p>
 <p><button type="button" id="commentPost">コメントする</button> <span class="muted" id="commentNote"></span></p>
+<h3>添付ファイル</h3>
+<ul id="dAttachments"></ul>
+<p><input type="file" id="attFile"> <button type="button" class="secondary" id="attUpload">アップロード</button></p>
+<p class="muted">1ファイル最大10MB。ファイルの表示・ダウンロードは、権限チェック済みの取得経路からのみ行えます。権限がない場合はエラーが表示されます。</p>
 </div>
 </div>
 <div id="vaultSlot"></div>`;

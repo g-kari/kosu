@@ -527,7 +527,7 @@ function appPage(
   const body = `
 <div class="layout">
 <aside class="sidebar">
-<div class="brand">Kosu</div>
+<div class="brand"><img src="/icons/icon-192.png" width="30" height="30" alt="">Kosu</div>
 <nav aria-label="メインメニュー">
 ${nav}
 </nav>

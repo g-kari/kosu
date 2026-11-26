@@ -98,7 +98,8 @@ a { color: var(--brand); }
 /* Phase 6 app layout (sidebar shell used by src/routes/ui.ts) */
 .layout { display: flex; gap: 1.5rem; align-items: flex-start; }
 .sidebar { width: 190px; flex: none; position: sticky; top: 1rem; }
-.sidebar .brand { font-size: 1.25rem; font-weight: 700; margin-bottom: .75rem; }
+.sidebar .brand { font-size: 1.25rem; font-weight: 700; margin-bottom: .75rem; display: flex; align-items: center; gap: .55rem; }
+.sidebar .brand img { display: block; }
 .sidebar nav a { display: block; padding: .45rem .6rem; border-radius: 6px; text-decoration: none; color: inherit; }
 .sidebar nav a:hover { background: #ececf1; }
 .sidebar nav a.active { background: var(--brand); color: #fff; }
@@ -217,7 +218,9 @@ export function shell(
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#2456c8">
 <link rel="manifest" href="/manifest.webmanifest">
-<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="icon" href="/icons/icon-32.png" type="image/png" sizes="32x32">
+<link rel="icon" href="/icons/icon-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <title>${title.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")} — Kosu</title><link rel="stylesheet" href="${STYLE_URL}"></head>
 <body${opts.wide ? ' class="wide"' : ""}><a class="skip" href="#main">本文へ移動</a><main id="main">${body}</main><footer class="site-footer"><span>Kosu</span><a href="/terms">${t(locale, "nav.terms")}</a><a href="/privacy">${t(locale, "nav.privacy")}</a><a href="/health">/health (JSON)</a></footer>${palette}${assetTags}<script>${script}</script>${chrome}${sw}</body></html>`;
 }

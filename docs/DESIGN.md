@@ -202,7 +202,7 @@
 - **カスタムレポート**: report_definitions（フェーズ3レポートのパラメータ＋範囲 last_days / this_month / last_month / custom＋スケジュール off / daily / weekly / monthly）。手動実行と Cron 実行の結果は report_runs に保存し、作成者へ report_ready 通知（アプリ内＋Webhook）。メール基盤がないため配信はこの2経路のみ
 - **見積もり単位**: tasks に estimate_points（数値）と estimate_size（XS/S/M/L/XL）を追加し、分数見積もりと併記可能にした。REST / MCP の両方で入出力可
 - **締切エスカレーション**（`src/escalation.ts`）: テナント単位の設定（既定は無効）。段階1=期限の before_days 日前に担当者、段階2=超過 overdue_admin_days 日に担当＋ウォッチャー＋プロジェクト管理者＋テナント管理者、段階3=以降 repeat_days ごとに段階2の宛先へ再送。フェーズ3の基本リマインドとは dedupe キー（`esc:` 接頭辞）で分離
-- **PWA**: /manifest.webmanifest、/sw.js（アプリシェルのキャッシュ。API・認証はキャッシュしない）、/icons/icon.svg。全画面の shell に manifest リンクと SW 登録を含む
+- **PWA**: /manifest.webmanifest、/sw.js（アプリシェルのキャッシュ。API・認証はキャッシュしない）、/icons/icon-*.png（採用ロゴ Clock-K、KAZAMI-344）。全画面の shell に manifest リンクと SW 登録を含む
 - **表示設定**: user_prefs（テーマ system/light/dark、言語 ja/en、週の開始曜日 ISO 1-7）をアカウント単位で保存し、画面のテーマ・ダッシュボードの週集計に反映
 - **多言語（i18n の範囲）**: 辞書方式（`src/i18n.ts`、日英）。辞書経由にするのはアプリシェルのナビゲーション、ダッシュボードの見出し、表示設定画面、初期設定画面、利用規約・プライバシーのタイトル、コマンドパレットの定型文まで。API のエラーメッセージと業務画面の細かなラベルは日本語のまま（今後追加する文言は辞書へ先に入れる）
 - **コマンドパレット**: Cmd/Ctrl+K で開く `<dialog>`。タスク横断検索（既定テナントの全プロジェクト）、タスク作成（先頭プロジェクトへ）、画面移動。矢印キー＋Enter＋Esc のキーボード操作完結

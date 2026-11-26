@@ -74,9 +74,21 @@
 
 ## ロゴ
 
-現在のアイコンは青い角丸四角に白の「K」（/icons/icon.svg、PWAとfaviconで共用）。
-新しいロゴ候補3案（K＋矢印／ガント＋チェック／ストップウォッチ＋チェック）は
-選定中。決まったら icon.svg と manifest のアイコンを差し替える。
+採用ロゴは候補A「Clock-K」（2026-11-26 決定、KAZAMI-344）。
+ブランドブルー（#2456c8 系）の角丸四角に、時計の針で描いた白い「K」。
+縦棒が K の背、細い矢印針と太い針が K の腕と脚を兼ねる。
+配信形式は PNG で、favicon・PWA アイコン・サイドバーのブランド表示で共用する。
+
+- /icons/icon-32.png（favicon 小）
+- /icons/icon-192.png（favicon・PWA・サイドバー・SW のシェルキャッシュ）
+- /icons/icon-512.png（PWA）
+- /icons/icon-maskable-512.png（PWA maskable、地の青にグリフを80%で配置）
+- /icons/apple-touch-icon.png（180px、地の青で全面）
+
+実体は src/logo-icons.ts に base64 で埋め込み、src/routes/public5.ts が配信する
+（Worker はコードから全資産を配信する構成のため）。差し替えるときは
+原画から PNG を再生成し、manifest と shell の参照、SW のキャッシュ版数を
+あわせて更新する。
 
 ## 運用
 

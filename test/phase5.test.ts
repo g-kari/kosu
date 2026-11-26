@@ -568,8 +568,12 @@ describe("pagination, pwa and pages", () => {
     const sw = await app.request(`${ORIGIN}/sw.js`, {}, env);
     expect(sw.status).toBe(200);
     expect(await sw.text()).toContain("kosu-shell");
-    const icon = await app.request(`${ORIGIN}/icons/icon.svg`, {}, env);
+    const icon = await app.request(`${ORIGIN}/icons/icon-192.png`, {}, env);
     expect(icon.status).toBe(200);
+    expect(icon.headers.get("content-type")).toContain("image/png");
+    const manifestIcons = ((await (await app.request(`${ORIGIN}/manifest.webmanifest`, {}, env)).json()) as Json).icons as Json[];
+    expect(manifestIcons.map((i) => i.src)).toContain("/icons/icon-512.png");
+    expect(manifestIcons.map((i) => i.src)).toContain("/icons/icon-maskable-512.png");
 
     const page = await call(db, "/app", { cookie: owner.cookie });
     expect(page.status).toBe(200);

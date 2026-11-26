@@ -3,7 +3,7 @@
  *
  *   GET  /manifest.webmanifest   PWA manifest
  *   GET  /sw.js                  service worker (app-shell cache)
- *   GET  /icons/icon.svg         app icon
+ *   GET  /icons/*.png            app icons (logo, KAZAMI-344)
  *   GET  /assets/:file           shared CSS/JS assets (hashed, immutable)
  *   GET  /terms                  terms of service (placeholder text)
  *   GET  /privacy                privacy policy (placeholder text)
@@ -27,6 +27,13 @@ import {
   resolveShareToken,
 } from "../public-links";
 import { insertTask } from "../tasks";
+import {
+  APPLE_TOUCH_ICON_PNG_B64,
+  ICON_192_PNG_B64,
+  ICON_32_PNG_B64,
+  ICON_512_PNG_B64,
+  ICON_MASKABLE_512_PNG_B64,
+} from "../logo-icons";
 import { assertWithinLimits } from "../usage";
 import type { Env, Variables } from "../types";
 
@@ -46,15 +53,42 @@ const MANIFEST = {
   theme_color: "#2456c8",
   icons: [
     {
-      src: "/icons/icon.svg",
-      sizes: "any",
-      type: "image/svg+xml",
+      src: "/icons/icon-192.png",
+      sizes: "192x192",
+      type: "image/png",
       purpose: "any",
+    },
+    {
+      src: "/icons/icon-512.png",
+      sizes: "512x512",
+      type: "image/png",
+      purpose: "any",
+    },
+    {
+      src: "/icons/icon-maskable-512.png",
+      sizes: "512x512",
+      type: "image/png",
+      purpose: "maskable",
     },
   ],
 };
 
-const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="18" fill="#2456c8"/><text x="50" y="68" font-size="52" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-weight="700">K</text></svg>`;
+/* Logo icons (KAZAMI-344): the adopted "Clock-K" logo as PNG files,
+ * decoded once from the base64 artwork in src/logo-icons.ts. */
+function decodePng(b64: string): Uint8Array<ArrayBuffer> {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+const ICON_BODIES: Record<string, Uint8Array<ArrayBuffer>> = {
+  "/icons/icon-32.png": decodePng(ICON_32_PNG_B64),
+  "/icons/icon-192.png": decodePng(ICON_192_PNG_B64),
+  "/icons/icon-512.png": decodePng(ICON_512_PNG_B64),
+  "/icons/icon-maskable-512.png": decodePng(ICON_MASKABLE_512_PNG_B64),
+  "/icons/apple-touch-icon.png": decodePng(APPLE_TOUCH_ICON_PNG_B64),
+};
 
 const SERVICE_WORKER = `
 // Kosu service worker (phase 5 shell, phase 9 offline data).
@@ -64,11 +98,11 @@ const SERVICE_WORKER = `
 // the network is down, so the app stays readable offline. Sensitive
 // or file-serving GETs are never cached, and the data cache is
 // purged on logout.
-const CACHE = "kosu-shell-v3";
+const CACHE = "kosu-shell-v4";
 const DATA_CACHE = "kosu-data-v2";
 let authGeneration = 0;
 let authTransitions = 0;
-const SHELL_URLS = ["/app", "/manifest.webmanifest", "/icons/icon.svg", "${STYLE_URL}", "${PALETTE_URL}", "${UI_ASSET_URL}", "${VAULT_ASSET_URL}", "${OFFLINE_URL}"];
+const SHELL_URLS = ["/app", "/manifest.webmanifest", "/icons/icon-192.png", "${STYLE_URL}", "${PALETTE_URL}", "${UI_ASSET_URL}", "${VAULT_ASSET_URL}", "${OFFLINE_URL}"];
 const DATA_DENY = ["encryption-key", "/export", "/attachments/", "/sync/", "format=csv"];
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -149,12 +183,14 @@ public5Routes.get("/sw.js", (c) => {
   });
 });
 
-public5Routes.get("/icons/icon.svg", (c) => {
-  return c.body(ICON_SVG, 200, {
-    "Content-Type": "image/svg+xml; charset=utf-8",
-    "Cache-Control": "public, max-age=86400",
+for (const [path, bytes] of Object.entries(ICON_BODIES)) {
+  public5Routes.get(path, (c) => {
+    return c.body(bytes, 200, {
+      "Content-Type": "image/png",
+      "Cache-Control": "public, max-age=86400",
+    });
   });
-});
+}
 
 /**
  * Phase 8: shared CSS/JS as external assets. The URLs carry a content
@@ -276,7 +312,7 @@ const DESIGN_SYSTEM_BODY = `
 <div class="toast static" role="status">トーストの見本：保存しました</div>
 <p class="muted">処理中は画面上部に読み込みバー（#busybar）が出る。アニメーションは prefers-reduced-motion で止まる。</p>
 <h2>ロゴ</h2>
-<p><img src="/icons/icon.svg" width="48" height="48" alt="現在のアイコン"> 現在のアイコン。新しいロゴ候補は選定中。</p>
+<p><img src="/icons/icon-192.png" width="48" height="48" alt="Kosu のロゴ"> 採用ロゴ「Clock-K」（時計の針で描いた K、2026-11-26 決定）。favicon・PWAアイコン・サイドバーで共用する。</p>
 <p><a href="/">トップへ戻る</a></p>
 `;
 
